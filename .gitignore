@@ -1,3 +1,7 @@
+qbconfig.py
+api.txt
+qBittorrent.log
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
