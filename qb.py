@@ -9,6 +9,7 @@ from sys import argv
 
 import requests
 from bs4 import BeautifulSoup
+import qbconfig
 
 
 class qBittorrent:
@@ -369,7 +370,6 @@ if __name__ == '__main__':
     script_dir = os.path.dirname(__file__)
     now = int(datetime.now().timestamp())
     sizes = {'TB': 1024 ** 4, 'GB': 1024 ** 3, 'MB': 1024 ** 2}
-    import qbconfig
 
     qb = qBittorrent(qbconfig.api_baseurl, qbconfig.seed_dir, qbconfig.watch_dir)
 
