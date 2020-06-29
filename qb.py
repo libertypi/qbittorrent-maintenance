@@ -9,6 +9,7 @@ from sys import argv
 
 import requests
 from bs4 import BeautifulSoup
+
 import qbconfig
 
 
@@ -94,19 +95,23 @@ class qBittorrent:
 
     def calcMinRemoves(self):
         targetSize = self.newTorrentSize - self.free_space - self.removeListSize
-        if targetSize > 0:
-            print('Total size: {:.02f}GB, space to free: {:.02f}GB'.format(self.newTorrentSize / sizes['GB'], targetSize / sizes['GB']))
-            cache = dict()
-            for i in range(1, len(self.removeCand)+1):
+        if targetSize > 0 and self.removeCand:
+            print('Total size: {:.02f}GB, space to free: {:.02f}GB'.format(
+                self.newTorrentSize / sizes['GB'], targetSize / sizes['GB']
+            ))
+
+            t = datetime.now()
+            cache = {(i,): self.torrents[i]['size'] for i in self.removeCand}
+            for i in range(2, len(self.removeCand)+1):
                 for j in combinations(self.removeCand, i):
-                    k = j[:-1]
-                    if k in cache:
-                        cache[j] = cache[k] + self.torrents[j[-1]]['size']
-                    else:
-                        cache[j] = sum(self.torrents[x]['size'] for x in j)
+                    cache[j] = cache[j[:-1]] + cache[j[-1:]]
             keys = min((i for i, j in cache.items() if j >= targetSize), key=cache.get)
             removeSize = cache[keys]
-            print('Done, {} torrents to remove, size: {:.02f}GB'.format(len(keys), removeSize / sizes['GB']))
+
+            t = datetime.now() - t
+            print('{} calculations in {} seconds, result torrents: {}, size: {:.02f}GB'.format(
+                len(cache), t.total_seconds(), len(keys), removeSize / sizes['GB']
+            ))
             self.removeCand.difference_update(keys)
             self.removeList.update(keys)
             self.removeCandSize -= removeSize
