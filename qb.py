@@ -60,11 +60,13 @@ class qBittorrent:
                         print('Deletion Failed.')
 
     def update_freeSpace(self):
-        self.free_space = shutil.disk_usage(self.seed_dir)[2] - sum(i['amount_left'] for i in self.torrents.values()) - self.space_threshold
+        self.free_space = shutil.disk_usage(self.seed_dir)[
+            2] - sum(i['amount_left'] for i in self.torrents.values()) - self.space_threshold
         self.update_availSpace()
 
     def update_availSpace(self):
-        self.availSpace = self.free_space + self.removeListSize + self.removeCandSize - self.newTorrentSize
+        self.availSpace = self.free_space + self.removeListSize + \
+            self.removeCandSize - self.newTorrentSize
 
     def action_needed(self):
         if self.free_space < 0:
@@ -86,7 +88,8 @@ class qBittorrent:
         self.removeCand.add(key)
         self.removeCandSize += size
         self.update_availSpace()
-        print('Add to remove candidates: {}, size: {}'.format(name, humansize(size)))
+        print('Add to remove candidates: {}, size: {}'.format(
+            name, humansize(size)))
 
     def add_torrent(self, path, size):
         self.newTorrentPath.append(path)
@@ -100,14 +103,20 @@ class qBittorrent:
                 humansize(self.newTorrentSize), humansize(targetSize)
             ))
 
-            keys = removeSize = None
-            for i in range(1, len(self.removeCand)+1):
-                for j in combinations(self.removeCand, i):
-                    s = sum(self.torrents[k]['size'] for k in j)
-                    if s >= targetSize and (not removeSize or removeSize > s):
-                        keys, removeSize = j, s
+            def findMinSum(lst, a=tuple(), b=0, i=0):
+                keys = minSum = None
+                for n in range(i, len(lst)):
+                    j = lst[n]
+                    k, s = a + (j,), b + self.torrents[j]['size']
+                    if n+1 < len(lst) and s < targetSize:
+                        k, s = findMinSum(lst, k, s, n+1)
+                    if s and s >= targetSize and (not minSum or s < minSum):
+                        keys, minSum = k, s
+                return keys, minSum
 
-            print('Result torrents: {}, size: {}'.format(
+            keys, removeSize = findMinSum(list(self.removeCand))
+
+            print('Removals: {}, size: {}'.format(
                 len(keys), humansize(removeSize)
             ))
             self.removeCand.difference_update(keys)
@@ -118,10 +127,12 @@ class qBittorrent:
     def remove_inactive(self):
         if self.removeList:
             if not debug:
-                para = '/torrents/delete?hashes=' + '|'.join(self.removeList) + '&deleteFiles=true'
+                para = '/torrents/delete?hashes=' + \
+                    '|'.join(self.removeList) + '&deleteFiles=true'
                 self.request(para)
             for i in self.removeList:
-                logs.append('Remove', self.torrents[i]['size'], self.torrents[i]['name'])
+                logs.append(
+                    'Remove', self.torrents[i]['size'], self.torrents[i]['name'])
 
     def copyToWatchDir(self):
         if self.newTorrentPath and not debug:
@@ -162,10 +173,13 @@ class Data:
             assert self.data.get('last_record') is not None
             span = now - self.data['last_record']
             assert qb.state['up_info_data'] >= self.data['up_info_data'] and 60 <= span <= 3600
-            qb.dlspeed = (qb.state['alltime_dl'] - self.data['alltime_dl']) // span
-            qb.upspeed = (qb.state['alltime_ul'] - self.data['alltime_ul']) // span
+            qb.dlspeed = (qb.state['alltime_dl'] -
+                          self.data['alltime_dl']) // span
+            qb.upspeed = (qb.state['alltime_ul'] -
+                          self.data['alltime_ul']) // span
             print(
-                'Average uploading speed: {}k/s, time span: {}s.'.format(qb.upspeed // 1024, span)
+                'Average uploading speed: {}k/s, time span: {}s.'.format(
+                    qb.upspeed // 1024, span)
             )
         except:
             span = None
@@ -184,7 +198,8 @@ class Data:
                     self.data['torrents'][key]['speed'].popleft()
                 if span and torrent['state'] not in qb.errors:
                     self.data['torrents'][key]['speed'].append(
-                        (now, (torrent['uploaded'] - self.data['torrents'][key]['uploaded']) // span)
+                        (now, (torrent['uploaded'] -
+                               self.data['torrents'][key]['uploaded']) // span)
                     )
             except:
                 self.data['torrents'][key] = {
@@ -331,7 +346,7 @@ def download_torrent(feed_url, username, password, qb):
 
     for torrent in page.find('table', class_='torrents').find_all('tr', recursive=False):
         try:
-            row = torrent.find_all('td', recursive=False)
+            row = newmethod344(torrent)
 
             size = size_convert(row[4].text)
             assert 0 < size <= qb.availSpace
@@ -374,6 +389,11 @@ def download_torrent(feed_url, username, password, qb):
     data.save_session(session)
 
 
+def newmethod344(torrent):
+    row = torrent.find_all('td', recursive=False)
+    return row
+
+
 if __name__ == '__main__':
     debug = True if len(argv) > 1 and argv[1] == '-d' else False
 
@@ -381,7 +401,8 @@ if __name__ == '__main__':
     now = int(datetime.now().timestamp())
     sizes = {'TB': 1024 ** 4, 'GB': 1024 ** 3, 'MB': 1024 ** 2}
 
-    qb = qBittorrent(qbconfig.api_baseurl, qbconfig.seed_dir, qbconfig.watch_dir)
+    qb = qBittorrent(qbconfig.api_baseurl,
+                     qbconfig.seed_dir, qbconfig.watch_dir)
 
     data = Data('data')
     data.record(qb)
@@ -395,7 +416,8 @@ if __name__ == '__main__':
     if qb.action_needed() or debug:
         build_remove_list()
         if qb.availSpace > 0:
-            download_torrent(qbconfig.feed_url, qbconfig.username, qbconfig.password, qb)
+            download_torrent(qbconfig.feed_url,
+                             qbconfig.username, qbconfig.password, qb)
         qb.calcMinRemoves()
         qb.remove_inactive()
         qb.copyToWatchDir()
