@@ -100,17 +100,15 @@ class qBittorrent:
                 bytes_to_gb(self.newTorrentSize), bytes_to_gb(targetSize)
             ))
 
-            t = datetime.now()
-            cache = {(i,): self.torrents[i]['size'] for i in self.removeCand}
-            for i in range(2, len(self.removeCand)+1):
+            keys = removeSize = None
+            for i in range(1, len(self.removeCand)+1):
                 for j in combinations(self.removeCand, i):
-                    cache[j] = cache[j[:-1]] + cache[j[-1:]]
-            keys = min((i for i, j in cache.items() if j >= targetSize), key=cache.get)
-            removeSize = cache[keys]
+                    s = sum(self.torrents[k]['size'] for k in j)
+                    if s >= targetSize and (not removeSize or removeSize > s):
+                        keys, removeSize = j, s
 
-            t = datetime.now() - t
-            print('{} calculations in {} seconds, result torrents: {}, size: {}'.format(
-                len(cache), t.total_seconds(), len(keys), bytes_to_gb(removeSize)
+            print('Result torrents: {}, size: {}'.format(
+                len(keys), bytes_to_gb(removeSize)
             ))
             self.removeCand.difference_update(keys)
             self.removeList.update(keys)
@@ -256,7 +254,7 @@ def build_remove_list():
     def is_inactive():
         if 0 < torrent['last_activity'] < time_threshold:
             return True
-        elif torrent['dlspeed'] == torrent['upspeed'] == 0 and torrent['num_incomplete'] <= 3:
+        elif torrent['num_incomplete'] <= 3 and torrent['dlspeed'] == torrent['upspeed'] == 0:
             return True
         else:
             record = data.data['torrents'][key]['speed']
