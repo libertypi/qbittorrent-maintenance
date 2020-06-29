@@ -80,13 +80,13 @@ class qBittorrent:
         self.removeList.add(key)
         self.removeListSize += size
         self.update_availSpace()
-        print('Add to remove list: {}, size: {:.02f}GB'.format(name, size / sizes['GB']))
+        print('Add to remove list: {}, size: {}'.format(name, bytes_to_gb(size)))
 
     def set_removeCand(self, key, size, name):
         self.removeCand.add(key)
         self.removeCandSize += size
         self.update_availSpace()
-        print('Add to remove candidates: {}, size: {:.02f}GB'.format(name, size / sizes['GB']))
+        print('Add to remove candidates: {}, size: {}'.format(name, bytes_to_gb(size)))
 
     def add_torrent(self, path, size):
         self.newTorrentPath.append(path)
@@ -96,8 +96,8 @@ class qBittorrent:
     def calcMinRemoves(self):
         targetSize = self.newTorrentSize - self.free_space - self.removeListSize
         if targetSize > 0 and self.removeCand:
-            print('Total size: {:.02f}GB, space to free: {:.02f}GB'.format(
-                self.newTorrentSize / sizes['GB'], targetSize / sizes['GB']
+            print('Total size: {}, space to free: {}'.format(
+                bytes_to_gb(self.newTorrentSize), bytes_to_gb(targetSize)
             ))
 
             t = datetime.now()
@@ -109,8 +109,8 @@ class qBittorrent:
             removeSize = cache[keys]
 
             t = datetime.now() - t
-            print('{} calculations in {} seconds, result torrents: {}, size: {:.02f}GB'.format(
-                len(cache), t.total_seconds(), len(keys), removeSize / sizes['GB']
+            print('{} calculations in {} seconds, result torrents: {}, size: {}'.format(
+                len(cache), t.total_seconds(), len(keys), bytes_to_gb(removeSize)
             ))
             self.removeCand.difference_update(keys)
             self.removeList.update(keys)
@@ -219,7 +219,7 @@ class Log:
     def append(self, action, size, name):
         self.logs.append('{:20}{:12}{:12}{}'.format(
             datetime.now().strftime('%D %T'), action,
-            '{:.02f}GB'.format(size / sizes['GB']) if size else '----',
+            bytes_to_gb(size) if size else '---',
             name))
 
     def write(self):
@@ -245,6 +245,10 @@ class Log:
                     if backup:
                         f.write(backup)
                 shutil.copy(self.logfile, self.logbackup)
+
+
+def bytes_to_gb(byte):
+    return '{:.02f}GB'.format(byte / sizes['GB'])
 
 
 def build_remove_list():
@@ -295,7 +299,7 @@ def download_torrent(feed_url, username, password, qb):
     if not os.path.exists(torrent_dir):
         os.mkdir(torrent_dir)
 
-    print('Connecting to M-Team... Max avail: {:.02f}GB'.format(qb.availSpace / sizes['GB']))
+    print('Connecting to M-Team... Max avail:', bytes_to_gb(qb.availSpace))
 
     session = data.get_session()
 
@@ -359,8 +363,8 @@ def download_torrent(feed_url, username, password, qb):
 
         qb.add_torrent(path, size)
         logs.append('Download', size, name)
-        print('New torrent: {}, size: {:.02f}GB, space remains: {:.02f}GB'.format(
-            name, size / sizes['GB'], qb.availSpace / sizes['GB']
+        print('New torrent: {}, size: {}, space remains: {}'.format(
+            name, bytes_to_gb(size), bytes_to_gb(qb.availSpace)
         ))
 
         if len(qb.newTorrentPath) == 2:
