@@ -215,7 +215,7 @@ class Log:
         self.logs = []
 
     def append(self, action, size, name):
-        self.logs.append('{:20}{:12}{:12}{}'.format(
+        self.logs.append('{:20}{:12}{:12}{}\n'.format(
             datetime.now().strftime('%D %T'), action,
             bytes_to_gb(size) if size else '---',
             name))
@@ -225,7 +225,7 @@ class Log:
             if debug:
                 print('Logs:')
                 for log in reversed(self.logs):
-                    print(log)
+                    print(log, end='')
             else:
                 try:
                     with open(self.logfile, mode='r', encoding='utf-8') as f:
@@ -239,7 +239,7 @@ class Log:
                         '-------------------------------------------------------------------------------')
                     )
                     for log in reversed(self.logs):
-                        f.write(log + '\n')
+                        f.write(log)
                     if backup:
                         f.write(backup)
                 shutil.copy(self.logfile, self.logbackup)
