@@ -30,11 +30,13 @@ class qBittorrent:
 
         para = '/sync/maindata'
         self.maindata = self.request(para).json()
-        assert self.maindata['server_state']['connection_status'] != 'disconnected'
+        assert self.maindata['server_state'][
+            'connection_status'] != 'disconnected'
         self.torrents = self.maindata['torrents']
         self.state = self.maindata['server_state']
-        self.errors = {'error', 'missingFiles',
-                       'pausedUP', 'pausedDL', 'unknown'}
+        self.errors = {
+            'error', 'missingFiles', 'pausedUP', 'pausedDL', 'unknown'
+        }
 
     def request(self, para):
         response = requests.get(self.api_baseurl + para)
@@ -60,13 +62,13 @@ class qBittorrent:
                         print('Deletion Failed.')
 
     def update_freeSpace(self):
-        self.free_space = shutil.disk_usage(self.seed_dir)[
-            2] - sum(i['amount_left'] for i in self.torrents.values()) - self.space_threshold
+        self.free_space = shutil.disk_usage(self.seed_dir)[2] - \
+            sum(i['amount_left'] for i in self.torrents.values()) - \
+            self.space_threshold
         self.update_availSpace()
 
     def update_availSpace(self):
-        self.availSpace = self.free_space + self.removeListSize + \
-            self.removeCandSize - self.newTorrentSize
+        self.availSpace = self.free_space + self.removeListSize + self.removeCandSize - self.newTorrentSize
 
     def action_needed(self):
         if self.free_space < 0:
@@ -100,24 +102,23 @@ class qBittorrent:
         targetSize = self.newTorrentSize - self.free_space - self.removeListSize
         if targetSize > 0 and self.removeCand:
             print('Total size: {}, space to free: {}'.format(
-                humansize(self.newTorrentSize), humansize(targetSize)
-            ))
+                humansize(self.newTorrentSize), humansize(targetSize)))
 
             def findMinSum(lst, a=tuple(), b=0, i=0):
                 keys = minSum = None
                 for n in range(i, len(lst)):
-                    k, s = a + (lst[n][0],), b + lst[n][1]
-                    if n+1 < len(lst) and s < targetSize:
-                        k, s = findMinSum(lst, k, s, n+1)
+                    k, s = a + (lst[n][0], ), b + lst[n][1]
+                    if n + 1 < len(lst) and s < targetSize:
+                        k, s = findMinSum(lst, k, s, n + 1)
                     if s and s >= targetSize and (not minSum or s < minSum):
                         keys, minSum = k, s
                 return keys, minSum
 
-            keys, removeSize = findMinSum(tuple((k, self.torrents[k]['size']) for k in self.removeCand))
+            keys, removeSize = findMinSum(
+                tuple((k, self.torrents[k]['size']) for k in self.removeCand))
 
-            print('Removals: {}, size: {}'.format(
-                len(keys), humansize(removeSize)
-            ))
+            print('Removals: {}, size: {}'.format(len(keys),
+                                                  humansize(removeSize)))
             self.removeCand.difference_update(keys)
             self.removeList.update(keys)
             self.removeCandSize -= removeSize
@@ -130,8 +131,8 @@ class qBittorrent:
                     '|'.join(self.removeList)
                 self.request(para)
             for i in self.removeList:
-                logs.append(
-                    'Remove', self.torrents[i]['size'], self.torrents[i]['name'])
+                logs.append('Remove', self.torrents[i]['size'],
+                            self.torrents[i]['name'])
 
     def copyToWatchDir(self):
         if self.newTorrentPath and not debug:
@@ -140,7 +141,8 @@ class qBittorrent:
                 shutil.copy(path, watch_dir)
 
     def resume_paused(self):
-        if list(i for i in self.torrents.values() if i['state'] in self.errors):
+        if list(i for i in self.torrents.values()
+                if i['state'] in self.errors):
             print('Resume torrents.')
             para = '/torrents/resume?hashes=all'
             self.request(para)
@@ -148,7 +150,6 @@ class qBittorrent:
 
 class Data:
     '''Data(datafile)'''
-
     def __init__(self, datafile):
         self.file = os.path.join(script_dir, datafile)
         try:
@@ -170,15 +171,14 @@ class Data:
     def record(self, qb):
         try:
             span = now - self.data['last_record']
-            assert qb.state['up_info_data'] >= self.data['up_info_data'] and 60 <= span <= 3600
+            assert qb.state['up_info_data'] >= self.data[
+                'up_info_data'] and 60 <= span <= 3600
             qb.dlspeed = (qb.state['alltime_dl'] -
                           self.data['alltime_dl']) // span
             qb.upspeed = (qb.state['alltime_ul'] -
                           self.data['alltime_ul']) // span
-            print(
-                'Average uploading speed: {}k/s, time span: {}s.'.format(
-                    qb.upspeed // 1024, span)
-            )
+            print('Average uploading speed: {}k/s, time span: {}s.'.format(
+                qb.upspeed // 1024, span))
         except:
             span = None
             print('Skip recording.')
@@ -192,12 +192,13 @@ class Data:
         for key, torrent in qb.torrents.items():
             try:
                 record = self.data['torrents'][key]
-                while len(record['speed']) > 0 and record['speed'][0][0] < span_limit:
+                while len(record['speed']
+                          ) > 0 and record['speed'][0][0] < span_limit:
                     record['speed'].popleft()
                 if span and torrent['state'] not in qb.errors:
                     record['speed'].append(
-                        (now, (torrent['uploaded'] - record['uploaded']) // span)
-                    )
+                        (now,
+                         (torrent['uploaded'] - record['uploaded']) // span))
             except:
                 record = self.data['torrents'][key] = {'speed': deque()}
 
@@ -228,8 +229,7 @@ class Log:
     def append(self, action, size, name):
         self.logs.append('{:20}{:12}{:14}{}\n'.format(
             datetime.now().strftime('%D %T'), action,
-            humansize(size) if size else '---',
-            name))
+            humansize(size) if size else '---', name))
 
     def write(self):
         if len(self.logs) > 0:
@@ -247,8 +247,8 @@ class Log:
                 with open(self.logfile, mode='w', encoding='utf-8') as f:
                     f.write('{:20}{:12}{:14}{}\n{}\n'.format(
                         'Date', 'Action', 'Size', 'Name',
-                        '-------------------------------------------------------------------------------')
-                    )
+                        '-------------------------------------------------------------------------------'
+                    ))
                     for log in reversed(self.logs):
                         f.write(log)
                     if backup:
@@ -256,7 +256,9 @@ class Log:
                 shutil.copy(self.logfile, self.logbackup)
 
 
-def humansize(size, suffixes=('KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB', 'ZiB', 'YiB')):
+def humansize(size,
+              suffixes=('KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB', 'ZiB',
+                        'YiB')):
     for suffix in suffixes:
         size /= 1024
         if size < 1024:
@@ -264,23 +266,26 @@ def humansize(size, suffixes=('KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB', 'ZiB', '
 
 
 def build_remove_list():
-
     def is_inactive():
         if 0 < torrent['last_activity'] < time_threshold:
             return True
-        elif torrent['num_incomplete'] <= 3 and torrent['dlspeed'] == torrent['upspeed'] == 0:
+        elif torrent['num_incomplete'] <= 3 and torrent['dlspeed'] == torrent[
+                'upspeed'] == 0:
             return True
         else:
             record = data.data['torrents'][key]['speed']
             if len(record) > 0 and record[-1][0] - record[0][0] >= span_limit:
-                return sum(i[1] for i in record) / len(record) < speed_threshold
+                return sum(i[1]
+                           for i in record) / len(record) < speed_threshold
         return False
 
     time_threshold = now - 86400
     speed_threshold = 26 * 1024
     span_limit = 3600 * 18
 
-    for key, torrent in sorted(qb.torrents.items(), key=lambda x: (x[1]['num_incomplete'], x[1]['last_activity'])):
+    for key, torrent in sorted(
+            qb.torrents.items(),
+            key=lambda x: (x[1]['num_incomplete'], x[1]['last_activity'])):
         if not time_threshold <= torrent['added_on'] <= now:
             if qb.availSpace < 0:
                 qb.set_removeList(key, torrent['size'], torrent['name'])
@@ -289,7 +294,6 @@ def build_remove_list():
 
 
 def download_torrent(feed_url, username, password, qb):
-
     def to_int(string):
         return int(re.sub('[^0-9]+', '', string))
 
@@ -326,20 +330,20 @@ def download_torrent(feed_url, username, password, qb):
             if i == 4:
                 print('Login Failed.')
                 return
-            print('Login... Attempt:', i+1)
+            print('Login... Attempt:', i + 1)
             session = requests.session()
-            session.post(
-                login_page,
-                data=payload,
-                headers=dict(referer=login_index)
-            )
+            session.post(login_page,
+                         data=payload,
+                         headers=dict(referer=login_index))
 
     re_download = re.compile('^download.php\?')
     re_details = re.compile('^details.php\?')
     re_tid = re.compile('id=([0-9]+)')
     re_xs = re.compile('限時：')
 
-    for torrent in page.find('table', class_='torrents').find_all('tr', recursive=False):
+    for torrent in page.find('table',
+                             class_='torrents').find_all('tr',
+                                                         recursive=False):
         try:
             row = torrent.find_all('td', recursive=False)
 
@@ -364,8 +368,7 @@ def download_torrent(feed_url, username, password, qb):
         name = row[1].find('a', href=re_details, title=True)['title']
 
         if not debug:
-            file = session.get(
-                domain + link, allow_redirects=True)
+            file = session.get(domain + link, allow_redirects=True)
             if file.ok:
                 with open(path, 'wb') as f:
                     f.write(file.content)
@@ -375,8 +378,7 @@ def download_torrent(feed_url, username, password, qb):
         qb.add_torrent(path, size)
         logs.append('Download', size, name)
         print('New torrent: {}, size: {}, space remains: {}'.format(
-            name, humansize(size), humansize(qb.availSpace)
-        ))
+            name, humansize(size), humansize(qb.availSpace)))
 
         if len(qb.newTorrentPath) == 2:
             break
@@ -389,10 +391,10 @@ if __name__ == '__main__':
 
     script_dir = os.path.dirname(__file__)
     now = int(datetime.now().timestamp())
-    sizes = {'TB': 1024 ** 4, 'GB': 1024 ** 3, 'MB': 1024 ** 2}
+    sizes = {'TB': 1024**4, 'GB': 1024**3, 'MB': 1024**2}
 
-    qb = qBittorrent(qbconfig.api_baseurl,
-                     qbconfig.seed_dir, qbconfig.watch_dir)
+    qb = qBittorrent(qbconfig.api_baseurl, qbconfig.seed_dir,
+                     qbconfig.watch_dir)
 
     data = Data('data')
     data.record(qb)
@@ -406,8 +408,8 @@ if __name__ == '__main__':
     if qb.action_needed() or debug:
         build_remove_list()
         if qb.availSpace > 0:
-            download_torrent(qbconfig.feed_url,
-                             qbconfig.username, qbconfig.password, qb)
+            download_torrent(qbconfig.feed_url, qbconfig.username,
+                             qbconfig.password, qb)
         qb.calcMinRemoves()
         qb.remove_inactive()
         qb.copyToWatchDir()
