@@ -106,15 +106,14 @@ class qBittorrent:
             def findMinSum(lst, a=tuple(), b=0, i=0):
                 keys = minSum = None
                 for n in range(i, len(lst)):
-                    j = lst[n]
-                    k, s = a + (j,), b + self.torrents[j]['size']
+                    k, s = a + (lst[n][0],), b + lst[n][1]
                     if n+1 < len(lst) and s < targetSize:
                         k, s = findMinSum(lst, k, s, n+1)
                     if s and s >= targetSize and (not minSum or s < minSum):
                         keys, minSum = k, s
                 return keys, minSum
 
-            keys, removeSize = findMinSum(list(self.removeCand))
+            keys, removeSize = findMinSum(tuple((k, self.torrents[k]['size']) for k in self.removeCand))
 
             print('Removals: {}, size: {}'.format(
                 len(keys), humansize(removeSize)
@@ -127,8 +126,8 @@ class qBittorrent:
     def remove_inactive(self):
         if self.removeList:
             if not debug:
-                para = '/torrents/delete?hashes=' + \
-                    '|'.join(self.removeList) + '&deleteFiles=true'
+                para = '/torrents/delete?deleteFiles=true&hashes=' + \
+                    '|'.join(self.removeList)
                 self.request(para)
             for i in self.removeList:
                 logs.append(
@@ -170,7 +169,6 @@ class Data:
 
     def record(self, qb):
         try:
-            assert self.data.get('last_record') is not None
             span = now - self.data['last_record']
             assert qb.state['up_info_data'] >= self.data['up_info_data'] and 60 <= span <= 3600
             qb.dlspeed = (qb.state['alltime_dl'] -
@@ -193,19 +191,17 @@ class Data:
         span_limit = now - 86400
         for key, torrent in qb.torrents.items():
             try:
-                assert key in self.data['torrents']
-                while len(self.data['torrents'][key]['speed']) > 0 and self.data['torrents'][key]['speed'][0][0] < span_limit:
-                    self.data['torrents'][key]['speed'].popleft()
+                record = self.data['torrents'][key]
+                while len(record['speed']) > 0 and record['speed'][0][0] < span_limit:
+                    record['speed'].popleft()
                 if span and torrent['state'] not in qb.errors:
-                    self.data['torrents'][key]['speed'].append(
-                        (now, (torrent['uploaded'] -
-                               self.data['torrents'][key]['uploaded']) // span)
+                    record['speed'].append(
+                        (now, (torrent['uploaded'] - record['uploaded']) // span)
                     )
             except:
-                self.data['torrents'][key] = {
-                    'speed': deque(), 'uploaded': None}
+                record = self.data['torrents'][key] = {'speed': deque()}
 
-            self.data['torrents'][key]['uploaded'] = torrent['uploaded']
+            record['uploaded'] = torrent['uploaded']
 
         self.data['last_record'] = now
         self.data['alltime_dl'] = qb.state['alltime_dl']
@@ -322,9 +318,8 @@ def download_torrent(feed_url, username, password, qb):
     for i in range(5):
         try:
             page = session.get(feed_url)
-            assert page is not None
             page = BeautifulSoup(page.content, 'html.parser')
-            assert '登錄' not in page.title.string
+            assert page is not None and '登錄' not in page.title.string
             print('Session valid.')
             break
         except:
@@ -346,7 +341,7 @@ def download_torrent(feed_url, username, password, qb):
 
     for torrent in page.find('table', class_='torrents').find_all('tr', recursive=False):
         try:
-            row = newmethod344(torrent)
+            row = torrent.find_all('td', recursive=False)
 
             size = size_convert(row[4].text)
             assert 0 < size <= qb.availSpace
@@ -387,11 +382,6 @@ def download_torrent(feed_url, username, password, qb):
             break
 
     data.save_session(session)
-
-
-def newmethod344(torrent):
-    row = torrent.find_all('td', recursive=False)
-    return row
 
 
 if __name__ == '__main__':
