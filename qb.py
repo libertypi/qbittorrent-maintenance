@@ -358,9 +358,13 @@ def download_torrent(feed_url, username, password, qb):
     re_tid = re.compile("id=([0-9]+)")
     re_xs = re.compile("限時：")
 
-    for torrent in page.find("table", class_="torrents").find_all(
-        "tr", recursive=False
-    ):
+    torrents = (
+        page.find(id="form_torrent")
+        .find("table", class_="torrents")
+        .find_all("tr", recursive=False)
+    )
+
+    for torrent in torrents:
         try:
             row = torrent.find_all("td", recursive=False)
 
@@ -372,8 +376,7 @@ def download_torrent(feed_url, username, password, qb):
             assert uploader > 0 and downloader >= 10
 
             xs = row[1].find(string=re_xs)
-            if xs is not None:
-                assert "日" in xs
+            assert xs is None or "日" in xs
 
             link = row[1].find("a", href=re_download)["href"]
             tid = re_tid.search(link).group(1)
