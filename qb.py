@@ -26,6 +26,8 @@ class qBittorrent:
         self.newTorrentSize = 0
         self.dlspeed = None
         self.upspeed = None
+        self.dl_threshold = 8 * sizes["MB"]
+        self.up_threshold = 2.6 * sizes["MB"]
 
         para = "/sync/maindata"
         self.maindata = self.request(para).json()
@@ -79,9 +81,7 @@ class qBittorrent:
         elif self.dlspeed is None:
             return False
         else:
-            dl_threshold = 8 * sizes["MB"]
-            up_threshold = 2.6 * sizes["MB"]
-            return self.dlspeed < dl_threshold and self.upspeed < up_threshold
+            return self.dlspeed < self.dl_threshold and self.upspeed < self.up_threshold
 
     def set_removeList(self, key, size, name):
         self.removeList.add(key)
@@ -180,6 +180,8 @@ class Data:
             span = now - self.data["last_record"]
             assert (
                 qb.state["up_info_data"] >= self.data["up_info_data"]
+                and qb.state["use_alt_speed_limits"] == False
+                and qb.state["up_rate_limit"] > qb.up_threshold
                 and 60 <= span <= 3600
             )
             qb.dlspeed = (qb.state["alltime_dl"] - self.data["alltime_dl"]) // span
@@ -299,7 +301,7 @@ def build_remove_list():
 
     time_threshold = now - 86400
     speed_threshold = 26 * 1024
-    span_limit = 3600 * 18
+    span_limit = 3600 * 20
 
     for key, torrent in sorted(
         qb.torrents.items(),
