@@ -331,6 +331,9 @@ def download_torrent(feed_url, username, password, qb):
     login_page = domain + "takelogin.php"
     feed_url = domain + feed_url
     payload = {"username": username, "password": password}
+    header = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.116 Safari/537.36",
+    }
 
     torrent_dir = os.path.join(script_dir, "torrent")
     if not os.path.exists(torrent_dir):
@@ -342,7 +345,7 @@ def download_torrent(feed_url, username, password, qb):
 
     for i in range(5):
         try:
-            page = session.get(feed_url)
+            page = session.get(feed_url, headers=header)
             page = BeautifulSoup(page.content, "html.parser")
             assert page is not None and "登錄" not in page.title.string
             print("Session valid.")
@@ -353,7 +356,9 @@ def download_torrent(feed_url, username, password, qb):
                 return
             print("Login... Attempt:", i + 1)
             session = requests.session()
-            session.post(login_page, data=payload, headers=dict(referer=login_index))
+            session.post(
+                login_page, data=payload, headers={"referer": login_index, **header}
+            )
 
     re_download = re.compile("^download.php\?")
     re_details = re.compile("^details.php\?")
@@ -371,26 +376,30 @@ def download_torrent(feed_url, username, password, qb):
             row = torrent.find_all("td", recursive=False)
 
             size = size_convert(row[4].text)
-            assert 0 < size <= qb.availSpace
-
             uploader = to_int(row[5].text)
             downloader = to_int(row[6].text)
-            assert uploader > 0 and downloader >= 10
-
             xs = row[1].find(string=re_xs)
-            assert xs is None or "日" in xs
+
+            if not (
+                0 < size <= qb.availSpace
+                and uploader > 0
+                and downloader >= 10
+                and (not xs or "日" in xs)
+            ):
+                continue
 
             link = row[1].find("a", href=re_download)["href"]
             tid = re_tid.search(link).group(1)
             path = os.path.join(torrent_dir, tid + ".torrent")
-            assert link and tid and not os.path.exists(path)
+            if not link or not tid or os.path.exists(path):
+                continue
         except:
             continue
 
         name = row[1].find("a", href=re_details, title=True)["title"]
 
         if not debug:
-            file = session.get(domain + link, allow_redirects=True)
+            file = session.get(domain + link, allow_redirects=True, headers=header)
             if file.ok:
                 with open(path, "wb") as f:
                     f.write(file.content)
