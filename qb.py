@@ -148,7 +148,7 @@ class qBittorrent:
                 shutil.copy(path, watch_dir)
 
     def resume_paused(self):
-        if list(i for i in self.torrents.values() if i["state"] in self.errors):
+        if any(i["state"] in self.errors for i in self.torrents.values()):
             print("Resume torrents.")
             para = "/torrents/resume?hashes=all"
             self.request(para)
