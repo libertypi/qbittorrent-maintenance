@@ -37,7 +37,7 @@ class qBittorrent:
         self.errors = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
 
     def request(self, para):
-        response = requests.get(self.api_baseurl + para)
+        response = requests.get(f"{self.api_baseurl}{para}")
         response.raise_for_status()
         return response
 
@@ -132,9 +132,7 @@ class qBittorrent:
     def remove_inactive(self):
         if self.removeList:
             if not debug:
-                para = "/torrents/delete?deleteFiles=true&hashes=" + "|".join(
-                    self.removeList
-                )
+                para = f'/torrents/delete?deleteFiles=true&hashes={"|".join(self.removeList)}'
                 self.request(para)
             for i in self.removeList:
                 logs.append(
@@ -155,8 +153,6 @@ class qBittorrent:
 
 
 class Data:
-    """Data(datafile)"""
-
     def __init__(self, datafile):
         self.file = os.path.join(script_dir, datafile)
         try:
@@ -326,10 +322,10 @@ def download_torrent(feed_url, username, password, qb):
     if len(qb.newTorrentPath) >= 1:
         return
 
-    domain = "https://pt.m-team.cc/"
-    login_index = domain + "login.php"
-    login_page = domain + "takelogin.php"
-    feed_url = domain + feed_url
+    domain = "https://pt.m-team.cc"
+    login_index = f"{domain}/login.php"
+    login_page = f"{domain}/takelogin.php"
+    feed_url = f"{domain}/{feed_url}"
     payload = {"username": username, "password": password}
     header = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.116 Safari/537.36",
@@ -390,7 +386,7 @@ def download_torrent(feed_url, username, password, qb):
 
             link = row[1].find("a", href=re_download)["href"]
             tid = re_tid.search(link).group(1)
-            path = os.path.join(torrent_dir, tid + ".torrent")
+            path = os.path.join(torrent_dir, f"{tid}.torrent")
             if not link or not tid or os.path.exists(path):
                 continue
         except:
@@ -399,7 +395,7 @@ def download_torrent(feed_url, username, password, qb):
         name = row[1].find("a", href=re_details, title=True)["title"]
 
         if not debug:
-            file = session.get(domain + link, allow_redirects=True, headers=header)
+            file = session.get(f"{domain}/{link}", allow_redirects=True, headers=header)
             if file.ok:
                 with open(path, "wb") as f:
                     f.write(file.content)
