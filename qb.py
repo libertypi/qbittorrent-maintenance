@@ -106,28 +106,31 @@ class qBittorrent:
                 continue
 
             if self.availSpace < 0:
-                self.add_removes(k, v["size"], v["name"], direct=True)
+                self.add_removes(k, v["size"], v["name"], candidate=False)
 
             elif (
                 speed <= singleSpeedThreshold
                 or 0 < v["last_activity"] <= oneDayAgo
                 or (v["num_incomplete"] <= 3 and v["dlspeed"] == v["upspeed"] == 0)
             ):
-                self.add_removes(k, v["size"], v["name"], direct=False)
+                self.add_removes(k, v["size"], v["name"], candidate=True)
 
-    def add_removes(self, key, size, name, direct=False):
-        """direct: True: to removeList, False: to removeCand"""
-        if direct:
-            self.removeList[key] = size
-            self.removeListSize += size
-            displayName = "removes"
-        else:
+    def add_removes(self, key, size, name, candidate=True):
+        """candidate: 
+        True: to candidate list, will be removed if better torrent found.
+        False: to remove list, will be removed no matter what.
+        """
+        if candidate:
             self.removeCand[key] = size
             self.removeCandSize += size
             displayName = "remove candidates"
+        else:
+            self.removeList[key] = size
+            self.removeListSize += size
+            displayName = "removes"
 
         self._update_availSpace()
-        print("Add to {}: {}, size: {}".format(displayName, name, humansize(size)))
+        print(f"Add to {displayName}: {name}, size: {humansize(size)}")
 
     def add_torrent(self, filename: str, content: bytes, size: int):
         self.newTorrent[filename] = content
@@ -137,7 +140,7 @@ class qBittorrent:
     def promote_candidates(self):
         targetSize = self.newTorrentSize - self.freeSpace - self.removeListSize
         if targetSize > 0 and self.removeCand:
-            print("Total size: {}, space to free: {}".format(humansize(self.newTorrentSize), humansize(targetSize)))
+            print(f"Total size: {humansize(self.newTorrentSize)}, space to free: {humansize(targetSize)}")
 
             minKeys, minSum = self.findMinSum(self.removeCand, targetSize)
             for k in minKeys:
@@ -146,7 +149,7 @@ class qBittorrent:
             self.removeListSize += minSum
             self._update_availSpace()
 
-            print("Removals: {}, size: {}".format(len(minKeys), humansize(minSum)))
+            print(f"Removals: {len(minKeys)}, size: {humansize(minSum)}")
 
     def apply_removes(self):
         if self.removeList:
@@ -334,13 +337,6 @@ class Log:
             copy_backup(logfile, backup_dest)
 
 
-def copy_backup(source, dest):
-    try:
-        shutil.copy(source, dest)
-    except Exception as e:
-        print(f'Copying "{source}" to "{dest}" failed: {e}')
-
-
 def load_data(datafile: str):
     """Load Data object from pickle."""
     try:
@@ -354,6 +350,13 @@ def load_data(datafile: str):
             pass
         data = Data()
     return data
+
+
+def copy_backup(source, dest):
+    try:
+        shutil.copy(source, dest)
+    except Exception as e:
+        print(f'Copying "{source}" to "{dest}" failed: {e}')
 
 
 def humansize(size, suffixes=("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB")):
