@@ -367,7 +367,7 @@ def humansize(size, suffixes=("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "
     return "too large for me"
 
 
-def mteam_download(feed_url, username, password, qb: qBittorrent, maxDownloads=1):
+def mteam_download(feed_url: str, username: str, password: str, qb: qBittorrent, data: Data, maxDownloads=1):
     def to_int(string):
         return int(re.sub(r"[^0-9]+", "", string))
 
@@ -470,7 +470,7 @@ if __name__ == "__main__":
     if not data.skipThisTime and qb.action_needed():
         qb.build_remove_lists(data)
         if qb.availSpace > 0:
-            mteam_download(qbconfig.feed_url, qbconfig.username, qbconfig.password, qb, maxDownloads=1)
+            mteam_download(qbconfig.feed_url, qbconfig.username, qbconfig.password, qb, data, maxDownloads=1)
             qb.promote_candidates()
         qb.apply_removes()
         qb.upload_torrent()
