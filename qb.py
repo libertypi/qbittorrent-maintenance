@@ -234,6 +234,7 @@ class Data:
             "session",
             "mteamHistory",
         )
+
         if all(hasattr(self, attr) for attr in attrs) and self._hash_dataframe() == self.frameHash:
             return True
         return False
@@ -285,18 +286,19 @@ class Data:
     def speed_sorted(self):
         return self.speedFrame.last("D").mean().sort_values()
 
-    def dump(self, datafile: str):
+    def dump(self, datafile: str, backup_dest=None):
         try:
             with open(datafile, "wb") as f:
                 pickle.dump(self, f)
         except Exception as e:
             log.append("Error", None, f"Writing data to disk failed: {e}")
+            return
+        if backup_dest:
+            copy_backup(datafile, backup_dest)
 
 
 class Log:
-    def __init__(self, logfile: str, logbackup=None):
-        self.logfile = logfile
-        self.logbackup = logbackup
+    def __init__(self):
         self.log = []
 
     def append(self, action, size, name):
@@ -306,7 +308,7 @@ class Log:
             )
         )
 
-    def write(self):
+    def write(self, logfile: str, backup_dest=None):
         if not self.log:
             return
 
@@ -317,22 +319,26 @@ class Log:
             return
 
         try:
-            with open(self.logfile, mode="r", encoding="utf-8") as f:
+            with open(logfile, mode="r", encoding="utf-8") as f:
                 oldLog = "".join(f.readlines()[2:])
         except Exception:
             oldLog = None
 
-        with open(self.logfile, mode="w", encoding="utf-8") as f:
-            f.write("{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", "-" * 80,))
+        with open(logfile, mode="w", encoding="utf-8") as f:
+            f.write("{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", "-" * 80))
             f.writelines(reversed(self.log))
             if oldLog:
                 f.write(oldLog)
 
-        if self.logbackup:
-            try:
-                shutil.copy(self.logfile, self.logbackup)
-            except Exception as e:
-                print(f'Copying "{self.logfile}" to "{self.logbackup}" failed: {e}')
+        if backup_dest:
+            copy_backup(logfile, backup_dest)
+
+
+def copy_backup(source, dest):
+    try:
+        shutil.copy(source, dest)
+    except Exception as e:
+        print(f'Copying "{source}" to "{dest}" failed: {e}')
 
 
 def load_data(datafile: str):
@@ -453,7 +459,7 @@ if __name__ == "__main__":
     datafile = os.path.join(script_dir, "data")
     logfile = os.path.join(script_dir, "qb-maintenance.log")
 
-    log = Log(logfile, qbconfig.logbackup)
+    log = Log()
     data = load_data(datafile)
     data.record(qb)
     qb.clean_seed_dir()
@@ -469,8 +475,8 @@ if __name__ == "__main__":
         print("System is healthy, no action needed.")
 
     qb.resume_paused()
-    data.dump(datafile)
-    log.write()
+    data.dump(datafile, qbconfig.backup_dest)
+    log.write(logfile, qbconfig.backup_dest)
 
 else:
     raise ImportError
