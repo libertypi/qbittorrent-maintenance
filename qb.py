@@ -20,7 +20,6 @@ sizes["KiB"] = sizes["KB"] = 1024
 
 
 class qBittorrent:
-    errors = frozenset(("error", "missingFiles", "pausedUP", "pausedDL", "unknown"))
     spaceQuota = 50 * sizes["GiB"]
     dlspeedThreshold = 8 * sizes["MiB"]
     upspeedThreshold = 2.6 * sizes["MiB"]
@@ -39,7 +38,6 @@ class qBittorrent:
             raise RuntimeError("qBittorrent is not connected to the internet.")
         self.state = maindata["server_state"]
         self.torrents = maindata["torrents"]
-        self.hasErrors = any(i["state"] in self.errors for i in self.torrents.values())
 
         self.removeList = {}
         self.removeCand = {}
@@ -94,7 +92,12 @@ class qBittorrent:
     def action_needed(self):
         if debug or self.freeSpace < 0:
             return True
-        return self.dlspeed < self.dlspeedThreshold and self.upspeed < self.upspeedThreshold
+        if self.state["up_rate_limit"] <= self.upspeedThreshold or self.state["use_alt_speed_limits"]:
+            return False
+        try:
+            return self.dlspeed < self.dlspeedThreshold and self.upspeed < self.upspeedThreshold
+        except Exception:
+            return False
 
     def build_remove_lists(self, data):
         oneDayAgo = pd.Timestamp.now().value // pow(10, 9) - 86400  # Epoch timestamp
@@ -102,7 +105,7 @@ class qBittorrent:
 
         for k, speed in data.speed_sorted().items():
             v = self.torrents[k]
-            if v["added_on"] > oneDayAgo:
+            if speed is None or v["added_on"] > oneDayAgo:
                 continue
 
             if self.availSpace < 0:
@@ -115,7 +118,7 @@ class qBittorrent:
             ):
                 self.add_removes(k, v["size"], v["name"], candidate=True)
 
-    def add_removes(self, key, size, name, candidate=True):
+    def add_removes(self, key: str, size: int, name: str, candidate: bool):
         """candidate: 
         True: to candidate list, will be removed if better torrent found.
         False: to remove list, will be removed no matter what.
@@ -136,6 +139,7 @@ class qBittorrent:
         self.newTorrent[filename] = content
         self.newTorrentSize += size
         self._update_availSpace()
+        print(f"New torrent: {filename}, size: {humansize(size)}, max avail: {humansize(self.availSpace)}")
 
     def promote_candidates(self):
         targetSize = self.newTorrentSize - self.freeSpace - self.removeListSize
@@ -173,7 +177,8 @@ class qBittorrent:
                     f.write(content)
 
     def resume_paused(self):
-        if self.hasErrors:
+        errors = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
+        if any(i["state"] in errors for i in self.torrents.values()):
             print("Resume torrents.")
             path = "torrents/resume"
             payload = {"hashes": "all"}
@@ -210,13 +215,9 @@ class qBittorrent:
 
 class Data:
     def __init__(self):
-        self.lastRecordTime = None
-        self.lastAlltimeTraffic = None
-        self.lastSessionTraffic = None
-        self.speedFrame = pd.DataFrame()
-        self.trafficFrame = pd.DataFrame()
+        self.qBittorrentFrame = pd.DataFrame()
+        self.torrentFrame = pd.DataFrame()
         self.frameHash = None
-        self.skipThisTime = True
         self.session = requests.session()
         self.session.headers.update(
             {
@@ -227,67 +228,59 @@ class Data:
 
     def integrity_test(self):
         attrs = (
-            "lastRecordTime",
-            "lastAlltimeTraffic",
-            "lastSessionTraffic",
-            "speedFrame",
-            "trafficFrame",
+            "qBittorrentFrame",
+            "torrentFrame",
             "frameHash",
-            "skipThisTime",
             "session",
             "mteamHistory",
         )
-
         if all(hasattr(self, attr) for attr in attrs) and self._hash_dataframe() == self.frameHash:
             return True
+        print("Testing data intergrity failed.")
         return False
 
     def _hash_dataframe(self):
-        return (hash_pandas_object(self.trafficFrame).sum(), hash_pandas_object(self.speedFrame).sum())
+        return (hash_pandas_object(self.qBittorrentFrame).sum(), hash_pandas_object(self.torrentFrame).sum())
 
     def record(self, qb: qBittorrent):
-        now = pd.Timestamp.now()
-        sessionTraffic = (qb.state["up_info_data"], qb.state["dl_info_data"])
-        alltimeTraffic = (qb.state["alltime_ul"], qb.state["alltime_dl"])
-        self.skipThisTime = True
+        """Record qBittorrent traffic data to pandas DataFrame."""
+
+        # Cleanup early records
+        lifeSpan = pd.Timedelta(days=7)
+        try:
+            self.qBittorrentFrame = self.qBittorrentFrame.last(lifeSpan)
+        except Exception:
+            self.qBittorrentFrame = pd.DataFrame()
 
         try:
-            timeSpan = now - self.lastRecordTime
-            if debug or (
-                all(i >= j for i, j in zip(sessionTraffic, self.lastSessionTraffic))
-                and qb.state["use_alt_speed_limits"] == False
-                and qb.state["up_rate_limit"] > qb.up_threshold
-                and pd.Timedelta(minutes=15) <= timeSpan <= pd.Timedelta(minutes=60)
-            ):
-                self.skipThisTime = False
+            self.torrentFrame = self.torrentFrame.last(lifeSpan)
+            difference = self.torrentFrame.columns.difference(qb.torrents)
+            self.torrentFrame.drop(columns=difference, inplace=True, errors="ignore")
         except Exception:
-            pass
+            self.torrentFrame = pd.DataFrame()
 
-        for f in (self.speedFrame, self.trafficFrame):
-            f.drop(columns=f.columns.difference(qb.torrents), inplace=True, errors="ignore")
+        # new data
+        now = pd.Timestamp.now()
+        qBittorrentRow = {"upload": qb.state["alltime_ul"], "download": qb.state["alltime_dl"]}
+        qBittorrentRow = pd.DataFrame(qBittorrentRow, index=[now])
+        torrentRow = pd.DataFrame({k: v["uploaded"] for k, v in qb.torrents.items()}, index=[now])
 
-        trafficRow = pd.DataFrame({k: v["uploaded"] for k, v in qb.torrents.items()}, index=[now])
-
-        if not self.skipThisTime:
-            timeSpan = timeSpan.seconds
-            qb.upspeed, qb.dlspeed = ((i - j) // timeSpan for i, j in zip(alltimeTraffic, self.lastAlltimeTraffic))
-            print(f"Average uploading speed: {qb.upspeed // 1024}k/s, time span: {timeSpan}s.")
-
-            if qb.hasErrors:
-                speedRow = trafficRow[[k for k, v in qb.torrents.items() if v["state"] not in qb.errors]]
-            else:
-                speedRow = trafficRow
-            speedRow = speedRow.subtract(self.trafficFrame.iloc[-1]) // timeSpan
-            self.speedFrame = self.speedFrame.append(speedRow, sort=False)
-
-        self.trafficFrame = self.trafficFrame.append(trafficRow, sort=False)
-        self.lastRecordTime = now
-        self.lastSessionTraffic = sessionTraffic
-        self.lastAlltimeTraffic = alltimeTraffic
+        # save the result
+        self.qBittorrentFrame = self.qBittorrentFrame.append(qBittorrentRow, sort=False)
+        self.torrentFrame = self.torrentFrame.append(torrentRow, sort=False)
         self.frameHash = self._hash_dataframe()
 
+        # qBittorrent speed
+        speeds = self.qBittorrentFrame.last("H").resample("S").ffill().diff().mean()
+        speeds = speeds.where(pd.notnull(speeds), None)
+        qb.upspeed = speeds["upload"]
+        qb.dlspeed = speeds["download"]
+
+        print(f"qBittorrent average speed in last hour, ul: {humansize(qb.upspeed)}/s, dl: {humansize(qb.dlspeed)}/s.")
+
     def speed_sorted(self):
-        return self.speedFrame.last("D").mean().sort_values()
+        speeds = self.torrentFrame.last("D").resample("S").ffill().diff().mean()
+        return speeds.where(pd.notnull(speeds), None).sort_values()
 
     def dump(self, datafile: str, backup_dest=None):
         try:
@@ -306,9 +299,7 @@ class Log:
 
     def append(self, action, size, name):
         self.log.append(
-            "{:20}{:12}{:14}{}\n".format(
-                pd.Timestamp.now().strftime("%D %T"), action, humansize(size) if size else "---", name,
-            )
+            "{:20}{:12}{:14}{}\n".format(pd.Timestamp.now().strftime("%D %T"), action, humansize(size), name,)
         )
 
     def write(self, logfile: str, backup_dest=None):
@@ -360,11 +351,14 @@ def copy_backup(source, dest):
 
 
 def humansize(size, suffixes=("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB")):
-    for suffix in suffixes:
-        size /= 1024
-        if size < 1024:
-            return "{:.2f} {}".format(size, suffix)
-    return "too large for me"
+    try:
+        for suffix in suffixes:
+            size /= 1024
+            if size < 1024:
+                return "{:.2f} {}".format(size, suffix)
+    except Exception:
+        pass
+    return "---"
 
 
 def mteam_download(feed_url: str, username: str, password: str, qb: qBittorrent, data: Data, maxDownloads=1):
@@ -414,7 +408,7 @@ def mteam_download(feed_url: str, username: str, password: str, qb: qBittorrent,
 
             link = row[1].find("a", href=re_download)["href"]
             tid = re_tid.search(link).group(1)
-            if not tid or tid in data.mteamHistory:
+            if tid is None or tid in data.mteamHistory:
                 continue
 
             size = size_convert(row[4].text)
@@ -443,10 +437,6 @@ def mteam_download(feed_url: str, username: str, password: str, qb: qBittorrent,
             if not debug:
                 data.mteamHistory.add(tid)
 
-            print(
-                "New torrent: {}, size: {}, space remains: {}".format(title, humansize(size), humansize(qb.availSpace))
-            )
-
         except Exception:
             continue
 
@@ -467,7 +457,7 @@ if __name__ == "__main__":
     data.record(qb)
     qb.clean_seed_dir()
 
-    if not data.skipThisTime and qb.action_needed():
+    if qb.action_needed():
         qb.build_remove_lists(data)
         if qb.availSpace > 0:
             mteam_download(qbconfig.feed_url, qbconfig.username, qbconfig.password, qb, data, maxDownloads=1)
