@@ -10,8 +10,6 @@ from bs4 import BeautifulSoup
 from pandas.util import hash_pandas_object
 from requests.compat import urljoin
 
-import qbconfig
-
 sizes = {}
 sizes["TiB"] = sizes["TB"] = 1024 ** 4
 sizes["GiB"] = sizes["GB"] = 1024 ** 3
@@ -119,7 +117,7 @@ class qBittorrent:
                 self.add_removes(k, v["size"], v["name"], candidate=True)
 
     def add_removes(self, key: str, size: int, name: str, candidate: bool):
-        """candidate: 
+        """candidate:
         True: to candidate list, will be removed if better torrent found.
         False: to remove list, will be removed no matter what.
         """
@@ -299,7 +297,12 @@ class Log:
 
     def append(self, action, size, name):
         self.log.append(
-            "{:20}{:12}{:14}{}\n".format(pd.Timestamp.now().strftime("%D %T"), action, humansize(size), name,)
+            "{:20}{:12}{:14}{}\n".format(
+                pd.Timestamp.now().strftime("%D %T"),
+                action,
+                humansize(size),
+                name,
+            )
         )
 
     def write(self, logfile: str, backup_dest=None):
@@ -361,7 +364,7 @@ def humansize(size, suffixes=("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "
     return "---"
 
 
-def mteam_download(feed_url: str, username: str, password: str, qb: qBittorrent, data: Data, maxDownloads=1):
+def mteam_download(feed_url: str, username: str, password: str, maxDownloads=1):
     def to_int(string):
         return int(re.sub(r"[^0-9]+", "", string))
 
@@ -369,9 +372,6 @@ def mteam_download(feed_url: str, username: str, password: str, qb: qBittorrent,
         num = float(re.search(r"[0-9.]+", string).group())
         unit = re.search(r"[TGMK]i?B", string).group()
         return int(num * sizes[unit])
-
-    if len(qb.newTorrent) >= maxDownloads:
-        return
 
     domain = "https://pt.m-team.cc"
 
@@ -402,65 +402,71 @@ def mteam_download(feed_url: str, username: str, password: str, qb: qBittorrent,
     re_tid = re.compile(r"id=([0-9]+)")
     re_xs = re.compile(r"限時：")
 
+    results = []
     for tr in soup.select("#form_torrent table.torrents > tr:not(:nth-of-type(1))"):
         try:
-            row = tr.find_all("td", recursive=False)
+            td = tr.find_all("td", recursive=False)
 
-            link = row[1].find("a", href=re_download)["href"]
+            link = td[1].find("a", href=re_download)["href"]
             tid = re_tid.search(link).group(1)
             if tid is None or tid in data.mteamHistory:
                 continue
 
-            size = size_convert(row[4].text)
-            uploader = to_int(row[5].text)
-            downloader = to_int(row[6].text)
-            xs = row[1].find(string=re_xs)
-            if size > qb.availSpace or uploader == 0 or downloader < 20 or (xs and "日" not in xs):
+            xs = td[1].find(string=re_xs)
+            size = size_convert(td[4].text)
+            uploader = to_int(td[5].text)
+            downloader = to_int(td[6].text)
+            if downloader < 20 or uploader == 0 or size > qb.availSpace or (xs and "日" not in xs):
                 continue
 
-            title = row[1].find("a", href=re_details, title=True)["title"]
-
-            response = session.get(urljoin(domain, link))
-            if not response.ok:
-                continue
-
-            try:
-                filename = re.search(
-                    r"filename=['\"]*(.+?\.torrent)\b", response.headers["Content-Disposition"]
-                ).group(1)
-                filename = requests.utils.unquote(filename)
-            except Exception:
-                filename = f"{tid}.torrent"
-
-            qb.add_torrent(filename, response.content, size)
-            log.append("Download", size, title)
-            if not debug:
-                data.mteamHistory.add(tid)
-
+            title = td[1].find("a", href=re_details, title=True)["title"]
+            results.append((downloader, size, title, link, tid))
         except Exception:
             continue
+
+    results.sort(reverse=True)
+    for downloader, size, title, link, tid in results:
+        try:
+            response = session.get(urljoin(domain, link))
+            assert response.ok
+        except Exception:
+            continue
+
+        try:
+            filename = re.search(r"filename=['\"]*(.+?\.torrent)\b", response.headers["Content-Disposition"]).group(1)
+            filename = requests.utils.unquote(filename)
+        except Exception:
+            filename = f"{tid}.torrent"
+
+        qb.add_torrent(filename, response.content, size)
+        log.append("Download", size, title)
+        if not debug:
+            data.mteamHistory.add(tid)
 
         if len(qb.newTorrent) >= maxDownloads:
             return
 
 
-if __name__ == "__main__":
-    debug = True if len(argv) > 1 and argv[1].startswith("-d") else False
-    qb = qBittorrent(qbconfig.api_host, qbconfig.seed_dir, qbconfig.watch_dir)
+def main():
+    import qbconfig
 
+    global data, debug, qb, log
     script_dir = os.path.dirname(__file__)
     datafile = os.path.join(script_dir, "data")
     logfile = os.path.join(script_dir, "qb-maintenance.log")
 
+    debug = True if len(argv) > 1 and argv[1].startswith("-d") else False
+    qb = qBittorrent(qbconfig.api_host, qbconfig.seed_dir, qbconfig.watch_dir)
     log = Log()
     data = load_data(datafile)
+
     data.record(qb)
     qb.clean_seed_dir()
 
     if qb.action_needed():
         qb.build_remove_lists(data)
         if qb.availSpace > 0:
-            mteam_download(qbconfig.feed_url, qbconfig.username, qbconfig.password, qb, data, maxDownloads=1)
+            mteam_download(qbconfig.feed_url, qbconfig.username, qbconfig.password, maxDownloads=1)
             qb.promote_candidates()
         qb.apply_removes()
         qb.upload_torrent()
@@ -471,5 +477,8 @@ if __name__ == "__main__":
     data.dump(datafile, qbconfig.backup_dest)
     log.write(logfile, qbconfig.backup_dest)
 
+
+if __name__ == "__main__":
+    main()
 else:
     raise ImportError
