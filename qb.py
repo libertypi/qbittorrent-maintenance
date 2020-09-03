@@ -88,7 +88,7 @@ class qBittorrent:
             self._init_freeSpace(shutil.disk_usage(self.seed_dir).free)
 
     def action_needed(self):
-        if debug or self.freeSpace < 0:
+        if self.freeSpace < 0:
             return True
         if self.state["up_rate_limit"] <= self.upspeedThreshold or self.state["use_alt_speed_limits"]:
             return False
@@ -107,21 +107,21 @@ class qBittorrent:
                 continue
 
             if self.availSpace < 0:
-                self.add_removes(k, v["size"], v["name"], candidate=False)
+                self.add_removes(k, v["size"], v["name"], conditional=False)
 
             elif (
                 speed <= singleSpeedThreshold
                 or 0 < v["last_activity"] <= oneDayAgo
                 or (v["num_incomplete"] <= 3 and v["dlspeed"] == v["upspeed"] == 0)
             ):
-                self.add_removes(k, v["size"], v["name"], candidate=True)
+                self.add_removes(k, v["size"], v["name"], conditional=True)
 
-    def add_removes(self, key: str, size: int, name: str, candidate: bool):
-        """candidate:
+    def add_removes(self, key: str, size: int, name: str, conditional: bool):
+        """conditional:
         True: to candidate list, will be removed if better torrent found.
         False: to remove list, will be removed no matter what.
         """
-        if candidate:
+        if conditional:
             self.removeCand[key] = size
             self.removeCandSize += size
             displayName = "remove candidates"
@@ -155,15 +155,14 @@ class qBittorrent:
 
     def apply_removes(self):
         if self.removeList:
-            if not debug:
-                path = "torrents/delete"
-                payload = {"hashes": "|".join(self.removeList), "deleteFiles": True}
-                self._request(path, params=payload)
+            path = "torrents/delete"
+            payload = {"hashes": "|".join(self.removeList), "deleteFiles": True}
+            self._request(path, params=payload)
             for k, v in self.removeList.items():
                 log.append("Remove", v, self.torrents[k]["name"])
 
     def upload_torrent(self):
-        if self.newTorrent and not debug:
+        if self.newTorrent:
             if not self.isLocalhost:
                 print("Uploading torrent to remote host is not support yet.")
                 return
@@ -216,13 +215,8 @@ class Data:
         self.qBittorrentFrame = pd.DataFrame()
         self.torrentFrame = pd.DataFrame()
         self.frameHash = None
-        self.session = requests.session()
-        self.session.headers.update(
-            {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.116 Safari/537.36"
-            }
-        )
         self.mteamHistory = set()
+        self.init_session()
 
     def integrity_test(self):
         attrs = (
@@ -239,6 +233,15 @@ class Data:
 
     def _hash_dataframe(self):
         return (hash_pandas_object(self.qBittorrentFrame).sum(), hash_pandas_object(self.torrentFrame).sum())
+
+    def init_session(self):
+        self.session = requests.session()
+        self.session.headers.update(
+            {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.116 Safari/537.36"
+            }
+        )
+        return self.session
 
     def record(self, qb: qBittorrent):
         """Record qBittorrent traffic data to pandas DataFrame."""
@@ -364,7 +367,7 @@ def humansize(size, suffixes=("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "
     return "---"
 
 
-def mteam_download(feed_url: str, username: str, password: str, maxDownloads=1):
+def mteam_download(feed_url: str, username: str, password: str, maxDownloads: int):
     def to_int(string):
         return int(re.sub(r"[^0-9]+", "", string))
 
@@ -381,7 +384,7 @@ def mteam_download(feed_url: str, username: str, password: str, maxDownloads=1):
     payload = {"username": username, "password": password}
     session = data.session
 
-    print("Connecting to M-Team... Max avail:", humansize(qb.availSpace))
+    print("Connecting to M-Team... Max avail space:", humansize(qb.availSpace))
 
     for i in range(5):
         try:
@@ -395,6 +398,7 @@ def mteam_download(feed_url: str, username: str, password: str, maxDownloads=1):
                 print("Login Failed.")
                 return
             print(f"Login... Attempt: {i+1}, Error: {e}")
+            session = data.init_session()
             session.post(login_page, data=payload, headers={"referer": login_index})
 
     re_download = re.compile(r"\bdownload.php\?")
@@ -416,21 +420,26 @@ def mteam_download(feed_url: str, username: str, password: str, maxDownloads=1):
             size = size_convert(td[4].text)
             uploader = to_int(td[5].text)
             downloader = to_int(td[6].text)
-            if downloader < 20 or uploader == 0 or size > qb.availSpace or (xs and "日" not in xs):
+            if downloader < 20 or size > qb.availSpace or (xs and "日" not in xs) or uploader == 0:
                 continue
 
             title = td[1].find("a", href=re_details, title=True)["title"]
-            results.append((downloader, size, title, link, tid))
+            results.append((downloader, size, tid, title, link))
         except Exception:
             continue
 
     results.sort(reverse=True)
-    for downloader, size, title, link, tid in results:
+    for downloader, size, tid, title, link in results:
+
+        if len(qb.newTorrent) >= maxDownloads:
+            return
+
         try:
             response = session.get(urljoin(domain, link))
             assert response.ok
-        except Exception:
-            continue
+        except Exception as e:
+            print(f"Downloading {title} torrent failed. {e}")
+            return
 
         try:
             filename = re.search(r"filename=['\"]*(.+?\.torrent)\b", response.headers["Content-Disposition"]).group(1)
@@ -442,9 +451,6 @@ def mteam_download(feed_url: str, username: str, password: str, maxDownloads=1):
         log.append("Download", size, title)
         if not debug:
             data.mteamHistory.add(tid)
-
-        if len(qb.newTorrent) >= maxDownloads:
-            return
 
 
 def main():
@@ -463,13 +469,14 @@ def main():
     data.record(qb)
     qb.clean_seed_dir()
 
-    if qb.action_needed():
+    if qb.action_needed() or debug:
         qb.build_remove_lists(data)
         if qb.availSpace > 0:
-            mteam_download(qbconfig.feed_url, qbconfig.username, qbconfig.password, maxDownloads=1)
+            mteam_download(qbconfig.feed_url, qbconfig.username, qbconfig.password, maxDownloads=2)
             qb.promote_candidates()
-        qb.apply_removes()
-        qb.upload_torrent()
+        if not debug:
+            qb.apply_removes()
+            qb.upload_torrent()
     else:
         print("System is healthy, no action needed.")
 
