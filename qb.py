@@ -22,13 +22,12 @@ class qBittorrent:
     dlspeedThreshold = 8 * sizes["MiB"]
     upspeedThreshold = 2.6 * sizes["MiB"]
 
-    def __init__(self, api_host: str, seed_dir: str, watch_dir: str):
+    def __init__(self, qBittorrentHost: str, seedDir: str, watchDir: str):
         """api_host: http://localhost"""
 
-        self.api_baseurl = urljoin(api_host, "api/v2/")
-        self.seed_dir = os.path.abspath(seed_dir) if seed_dir else None
-        self.watch_dir = os.path.abspath(watch_dir) if watch_dir else None
-        self.isLocalhost = True if seed_dir and watch_dir else False
+        self.api_baseurl = urljoin(qBittorrentHost, "api/v2/")
+        self.seedDir = os.path.abspath(seedDir) if seedDir else None
+        self.watchDir = os.path.abspath(watchDir) if watchDir else None
 
         path = "sync/maindata"
         maindata = self._request(path).json()
@@ -59,16 +58,16 @@ class qBittorrent:
     def _update_availSpace(self):
         self.availSpace = self.freeSpace + self.removeListSize + self.removeCandSize - self.newTorrentSize
 
-    def clean_seed_dir(self):
-        if not self.isLocalhost:
+    def clean_seedDir(self):
+        if not self.seedDir:
             return
 
         refresh = False
         names = set(i["name"] for i in self.torrents.values())
-        if os.path.dirname(self.watch_dir) == self.seed_dir:
-            names.add(os.path.basename(self.watch_dir))
+        if os.path.dirname(self.watchDir) == self.seedDir:
+            names.add(os.path.basename(self.watchDir))
 
-        with os.scandir(self.seed_dir) as it:
+        with os.scandir(self.seedDir) as it:
             for entry in it:
                 name = os.path.splitext(entry.name)[0] if entry.name.endswith(".!qB") else entry.name
                 if name not in names:
@@ -79,13 +78,13 @@ class qBittorrent:
                                 shutil.rmtree(entry.path)
                             else:
                                 os.remove(entry.path)
-                        except Exception:
-                            print("Deletion Failed.")
+                        except Exception as e:
+                            print(f"Deletion Failed. {e}")
                             continue
                     refresh = True
                     log.append("Cleanup", None, entry.name)
         if refresh:
-            self._init_freeSpace(shutil.disk_usage(self.seed_dir).free)
+            self._init_freeSpace(shutil.disk_usage(self.seedDir).free)
 
     def action_needed(self):
         if self.freeSpace < 0:
@@ -98,7 +97,7 @@ class qBittorrent:
             return False
 
     def build_remove_lists(self, data):
-        oneDayAgo = pd.Timestamp.now().value // pow(10, 9) - 86400  # Epoch timestamp
+        oneDayAgo = pd.Timestamp.now().timestamp() - 86400  # Epoch timestamp
         singleSpeedThreshold = self.upspeedThreshold // (len(self.torrents) ** 2)
 
         for k, speed in data.speed_sorted().items():
@@ -137,7 +136,6 @@ class qBittorrent:
         self.newTorrent[filename] = content
         self.newTorrentSize += size
         self._update_availSpace()
-        print(f"New torrent: {filename}, size: {humansize(size)}, max avail: {humansize(self.availSpace)}")
 
     def promote_candidates(self):
         targetSize = self.newTorrentSize - self.freeSpace - self.removeListSize
@@ -163,13 +161,13 @@ class qBittorrent:
 
     def upload_torrent(self):
         if self.newTorrent:
-            if not self.isLocalhost:
+            if not self.watchDir:
                 print("Uploading torrent to remote host is not support yet.")
                 return
-            if not os.path.exists(self.watch_dir):
-                os.mkdir(self.watch_dir)
+            if not os.path.exists(self.watchDir):
+                os.mkdir(self.watchDir)
             for filename, content in self.newTorrent.items():
-                path = os.path.join(self.watch_dir, filename)
+                path = os.path.join(self.watchDir, filename)
                 with open(path, "wb") as f:
                     f.write(content)
 
@@ -223,8 +221,8 @@ class Data:
             "qBittorrentFrame",
             "torrentFrame",
             "frameHash",
-            "session",
             "mteamHistory",
+            "session",
         )
         if all(hasattr(self, attr) for attr in attrs) and self._hash_dataframe() == self.frameHash:
             return True
@@ -283,15 +281,15 @@ class Data:
         speeds = self.torrentFrame.last("D").resample("S").ffill().diff().mean()
         return speeds.where(pd.notnull(speeds), None).sort_values()
 
-    def dump(self, datafile: str, backup_dest=None):
+    def dump(self, datafile: str, backupDir=None):
         try:
             with open(datafile, "wb") as f:
                 pickle.dump(self, f)
         except Exception as e:
             log.append("Error", None, f"Writing data to disk failed: {e}")
             return
-        if backup_dest:
-            copy_backup(datafile, backup_dest)
+        if backupDir:
+            copy_backup(datafile, backupDir)
 
 
 class Log:
@@ -308,7 +306,7 @@ class Log:
             )
         )
 
-    def write(self, logfile: str, backup_dest=None):
+    def write(self, logfile: str, backupDir=None):
         if not self.log:
             return
 
@@ -320,7 +318,7 @@ class Log:
 
         try:
             with open(logfile, mode="r", encoding="utf-8") as f:
-                oldLog = "".join(f.readlines()[2:])
+                oldLog = f.readlines()[2:]
         except Exception:
             oldLog = None
 
@@ -328,10 +326,10 @@ class Log:
             f.write("{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", "-" * 80))
             f.writelines(reversed(self.log))
             if oldLog:
-                f.write(oldLog)
+                f.writelines(oldLog)
 
-        if backup_dest:
-            copy_backup(logfile, backup_dest)
+        if backupDir:
+            copy_backup(logfile, backupDir)
 
 
 def load_data(datafile: str):
@@ -357,17 +355,15 @@ def copy_backup(source, dest):
 
 
 def humansize(size, suffixes=("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB")):
-    try:
+    if isinstance(size, (int, float)):
         for suffix in suffixes:
             size /= 1024
             if size < 1024:
                 return "{:.2f} {}".format(size, suffix)
-    except Exception:
-        pass
     return "---"
 
 
-def mteam_download(feed_url: str, username: str, password: str, maxDownloads: int):
+def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
 
     # These two functions should be wrapped inside a try...except block
     def to_int(string):
@@ -378,103 +374,119 @@ def mteam_download(feed_url: str, username: str, password: str, maxDownloads: in
         return int(float(m["num"]) * sizes[m["unit"]])
 
     domain = "https://pt.m-team.cc"
-
-    login_index = urljoin(domain, "login.php")
     login_page = urljoin(domain, "takelogin.php")
-    feed_url = urljoin(domain, feed_url)
-    payload = {"username": username, "password": password}
-    session = data.session
-
-    print("Connecting to M-Team... Max avail space:", humansize(qb.availSpace))
-
-    for i in range(5):
-        try:
-            response = session.get(feed_url)
-            soup = BeautifulSoup(response.content, "html.parser")
-            assert "login.php" not in response.url and "登錄" not in soup.title.string, "login invalid."
-            print("Session valid.")
-            break
-        except Exception as e:
-            if i == 4:
-                print("Login Failed.")
-                return
-            print(f"Login... Attempt: {i+1}, Error: {e}")
-            session = data.init_session()
-            session.post(login_page, data=payload, headers={"referer": login_index})
-
+    login_referer = {"referer": urljoin(domain, "login.php")}
+    payload = {"username": mteamAccount[0], "password": mteamAccount[1]}
     re_download = re.compile(r"\bdownload.php\?")
     re_details = re.compile(r"\bdetails.php\?")
-    re_xs = re.compile(r"限時：")
-
+    re_timelimit = re.compile(r"限時：")
+    re_date = re.compile(r"20[0-9]{2}(\W[0-9]{2}){2}\s+([0-9]{2}\W){2}[0-9]{2}")
+    session = data.session
     results = []
-    for tr in soup.select("#form_torrent table.torrents > tr:not(:nth-of-type(1))"):
-        try:
-            td = tr.find_all("td", recursive=False)
 
-            link = td[1].find("a", href=re_download)["href"]
-            tid = re.search(r"id=([0-9]+)", link).group(1)
-            if tid is None or tid in data.mteamHistory:
+    print("Connecting to M-Team... Max avail space:", humansize(qb.availSpace))
+    for feed in mteamFeeds:
+        feed = urljoin(domain, feed)
+
+        for i in range(5):
+            try:
+                response = session.get(feed)
+                response.raise_for_status()
+                soup = BeautifulSoup(response.content, "html.parser")
+                if "login.php" in response.url or "登錄" in soup.title.string:
+                    assert i < 4, "login failed."
+                    print(f"Login...")
+                    session.post(login_page, data=payload, headers=login_referer)
+                else:
+                    break
+            except Exception as e:
+                if i == 4:
+                    print(f"Failed: {e}")
+                    return
+                print(f"Retrying... Attempt: {i+1}, Error: {e}")
+                session = data.init_session()
+
+        print("Connection success.")
+
+        for tr in soup.select("#form_torrent table.torrents > tr:not(:nth-of-type(1))"):
+            try:
+                td = tr.find_all("td", recursive=False)
+
+                link = td[1].find("a", href=re_download)["href"]
+                tid = re.search(r"id=([0-9]+)", link).group(1)
+                if tid in data.mteamHistory:
+                    continue
+
+                timelimit = td[1].find(string=re_timelimit)
+                size = size_convert(td[4].get_text())
+                uploader = to_int(td[5].get_text())
+                downloader = to_int(td[6].get_text())
+                if downloader < 20 or size > qb.availSpace or (timelimit and "日" not in timelimit) or uploader == 0:
+                    continue
+
+                for a in td[1].find_all("a", href=re_details):
+                    title = a["title"] if a.has_attr("title") else a.get_text(strip=True)
+                    if title:
+                        break
+                else:
+                    title = "Unknown"
+
+                date = td[3].find(title=re_date)["title"]
+                date = pd.Timestamp(date).timestamp()
+
+                results.append((downloader, date, size, tid, title, link))
+            except Exception as e:
+                print("Reading page error:", e)
                 continue
-
-            xs = td[1].find(string=re_xs)
-            size = size_convert(td[4].text)
-            uploader = to_int(td[5].text)
-            downloader = to_int(td[6].text)
-            if downloader < 20 or size > qb.availSpace or (xs and "日" not in xs) or uploader == 0:
-                continue
-
-            title = td[1].find("a", href=re_details, title=True)["title"]
-            results.append((downloader, size, tid, title, link))
-        except Exception:
-            continue
 
     results.sort(reverse=True)
-    for downloader, size, tid, title, link in results:
-
-        if len(qb.newTorrent) >= maxDownloads:
-            return
-
+    for downloader, date, size, tid, title, link in results:
         try:
             response = session.get(urljoin(domain, link))
-            assert response.ok
+            response.raise_for_status()
         except Exception as e:
             print(f"Downloading {title} torrent failed. {e}")
             return
 
-        try:
-            filename = re.search(
-                r"filename=['\"]*(.+?\.torrent)\b", response.headers["Content-Disposition"], flags=re.IGNORECASE
-            ).group(1)
-            filename = requests.utils.unquote(filename)
-        except Exception:
-            filename = f"{tid}.torrent"
-
+        filename = f"{tid}.torrent"
         qb.add_torrent(filename, response.content, size)
         log.append("Download", size, title)
+        print(f"New torrent: {title}, size: {humansize(size)}, max avail: {humansize(qb.availSpace)}")
+
         if not debug:
             data.mteamHistory.add(tid)
 
+        if len(qb.newTorrent) >= maxDownloads:
+            return
 
-def main():
+
+if __name__ == "__main__":
     import qbconfig
 
-    global data, debug, qb, log
+    debug = False
+    config = qbconfig.Config
+    for arg in argv[1:]:
+        if arg.startswith("-d"):
+            debug = True
+        elif arg.startswith("-r"):
+            config = qbconfig.RemoteConfig
+            debug = True
+
     script_dir = os.path.dirname(__file__)
     datafile = os.path.join(script_dir, "data")
     logfile = os.path.join(script_dir, "qb-maintenance.log")
 
-    debug = True if len(argv) > 1 and argv[1].startswith("-d") else False
-    qb = qBittorrent(qbconfig.api_host, qbconfig.seed_dir, qbconfig.watch_dir)
+    qb = qBittorrent(config.qBittorrentHost, config.seedDir, config.watchDir)
     log = Log()
     data = load_data(datafile)
 
     data.record(qb)
-    qb.clean_seed_dir()
+    qb.clean_seedDir()
 
     if qb.action_needed() or debug:
         qb.build_remove_lists(data)
         if qb.availSpace > 0:
-            mteam_download(qbconfig.feed_url, qbconfig.username, qbconfig.password, maxDownloads=2)
+            mteam_download(config.mteamFeeds, config.mteamAccount, maxDownloads=2)
             qb.promote_candidates()
         if not debug:
             qb.apply_removes()
@@ -483,11 +495,8 @@ def main():
         print("System is healthy, no action needed.")
 
     qb.resume_paused()
-    data.dump(datafile, qbconfig.backup_dest)
-    log.write(logfile, qbconfig.backup_dest)
+    data.dump(datafile, config.backupDir)
+    log.write(logfile, config.backupDir)
 
-
-if __name__ == "__main__":
-    main()
 else:
     raise ImportError
