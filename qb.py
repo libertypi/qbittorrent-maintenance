@@ -424,12 +424,8 @@ def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
                 if downloader < 20 or size > qb.availSpace or (timelimit and "日" not in timelimit) or uploader == 0:
                     continue
 
-                for a in td[1].find_all("a", href=re_details):
-                    title = a["title"] if a.has_attr("title") else a.get_text(strip=True)
-                    if title:
-                        break
-                else:
-                    title = "Unknown"
+                title = td[1].find("a", href=re_details, string=True)
+                title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
 
                 date = td[3].find(title=re_date)["title"]
                 date = pd.Timestamp(date).timestamp()
