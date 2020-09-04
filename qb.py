@@ -439,6 +439,7 @@ def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
                 print("Reading page error:", e)
                 continue
 
+    print(f"Done. {len(results)} torrents collected.")
     results.sort(reverse=True)
     for downloader, date, size, tid, title, link in results:
         try:
