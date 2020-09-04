@@ -300,7 +300,12 @@ class Log:
 
     def append(self, action, size, name):
         self.log.append(
-            "{:20}{:12}{:14}{}\n".format(pd.Timestamp.now().strftime("%D %T"), action, humansize(size), name,)
+            "{:20}{:12}{:14}{}\n".format(
+                pd.Timestamp.now().strftime("%D %T"),
+                action,
+                humansize(size),
+                name,
+            )
         )
 
     def write(self, logfile: str, backup_dest=None):
