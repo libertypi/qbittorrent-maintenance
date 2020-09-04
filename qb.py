@@ -64,14 +64,14 @@ class qBittorrent:
             return
 
         refresh = False
-        qb_ext = re.compile("\.!qB$")
         names = set(i["name"] for i in self.torrents.values())
         if os.path.dirname(self.watch_dir) == self.seed_dir:
             names.add(os.path.basename(self.watch_dir))
 
         with os.scandir(self.seed_dir) as it:
             for entry in it:
-                if qb_ext.sub("", entry.name) not in names:
+                name = os.path.splitext(entry.name)[0] if entry.name.endswith(".!qB") else entry.name
+                if name not in names:
                     print("Cleanup:", entry.name)
                     if not debug:
                         try:
@@ -300,12 +300,7 @@ class Log:
 
     def append(self, action, size, name):
         self.log.append(
-            "{:20}{:12}{:14}{}\n".format(
-                pd.Timestamp.now().strftime("%D %T"),
-                action,
-                humansize(size),
-                name,
-            )
+            "{:20}{:12}{:14}{}\n".format(pd.Timestamp.now().strftime("%D %T"), action, humansize(size), name,)
         )
 
     def write(self, logfile: str, backup_dest=None):
@@ -368,13 +363,14 @@ def humansize(size, suffixes=("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "
 
 
 def mteam_download(feed_url: str, username: str, password: str, maxDownloads: int):
+
+    # These two functions should be wrapped inside a try...except block
     def to_int(string):
         return int(re.sub(r"[^0-9]+", "", string))
 
     def size_convert(string):
-        num = float(re.search(r"[0-9.]+", string).group())
-        unit = re.search(r"[TGMK]i?B", string).group()
-        return int(num * sizes[unit])
+        m = re.search(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[TGMK]i?B)", string)
+        return int(float(m["num"]) * sizes[m["unit"]])
 
     domain = "https://pt.m-team.cc"
 
@@ -403,7 +399,6 @@ def mteam_download(feed_url: str, username: str, password: str, maxDownloads: in
 
     re_download = re.compile(r"\bdownload.php\?")
     re_details = re.compile(r"\bdetails.php\?")
-    re_tid = re.compile(r"id=([0-9]+)")
     re_xs = re.compile(r"限時：")
 
     results = []
@@ -412,7 +407,7 @@ def mteam_download(feed_url: str, username: str, password: str, maxDownloads: in
             td = tr.find_all("td", recursive=False)
 
             link = td[1].find("a", href=re_download)["href"]
-            tid = re_tid.search(link).group(1)
+            tid = re.search(r"id=([0-9]+)", link).group(1)
             if tid is None or tid in data.mteamHistory:
                 continue
 
@@ -442,7 +437,9 @@ def mteam_download(feed_url: str, username: str, password: str, maxDownloads: in
             return
 
         try:
-            filename = re.search(r"filename=['\"]*(.+?\.torrent)\b", response.headers["Content-Disposition"]).group(1)
+            filename = re.search(
+                r"filename=['\"]*(.+?\.torrent)\b", response.headers["Content-Disposition"], flags=re.IGNORECASE
+            ).group(1)
             filename = requests.utils.unquote(filename)
         except Exception:
             filename = f"{tid}.torrent"
