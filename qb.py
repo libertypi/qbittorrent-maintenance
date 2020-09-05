@@ -10,11 +10,7 @@ from bs4 import BeautifulSoup
 from pandas.util import hash_pandas_object
 from requests.compat import urljoin
 
-sizes = {}
-sizes["TiB"] = sizes["TB"] = 1024 ** 4
-sizes["GiB"] = sizes["GB"] = 1024 ** 3
-sizes["MiB"] = sizes["MB"] = 1024 ** 2
-sizes["KiB"] = sizes["KB"] = 1024
+sizes = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGT"), (1024 ** s for s in range(1, 5))) for u in us}
 
 
 class qBittorrent:
@@ -31,10 +27,10 @@ class qBittorrent:
 
         path = "sync/maindata"
         maindata = self._request(path).json()
-        if maindata["server_state"]["connection_status"] not in ("connected", "firewalled"):
-            raise RuntimeError("qBittorrent is not connected to the internet.")
         self.state = maindata["server_state"]
         self.torrents = maindata["torrents"]
+        if self.state["connection_status"] not in ("connected", "firewalled"):
+            raise RuntimeError("qBittorrent is not connected to the internet.")
 
         self.removeList = self.removeCand = None
         self.newTorrent = {}
@@ -199,10 +195,7 @@ class Data:
             "mteamHistory",
             "session",
         )
-        if all(hasattr(self, attr) for attr in attrs) and self._hash_dataframe() == self.frameHash:
-            return True
-        print("Testing data intergrity failed.")
-        return False
+        return all(hasattr(self, attr) for attr in attrs) and self._hash_dataframe() == self.frameHash
 
     def _hash_dataframe(self):
         return (hash_pandas_object(self.qBittorrentFrame).sum(), hash_pandas_object(self.torrentFrame).sum())
@@ -219,37 +212,32 @@ class Data:
     def record(self, qb: qBittorrent):
         """Record qBittorrent traffic data to pandas DataFrame."""
 
-        # Cleanup early records
-        lifeSpan = pd.Timedelta(days=7)
-        try:
-            self.qBittorrentFrame = self.qBittorrentFrame.last(lifeSpan)
-        except Exception:
-            self.qBittorrentFrame = pd.DataFrame()
-
-        try:
-            self.torrentFrame = self.torrentFrame.last(lifeSpan)
-            difference = self.torrentFrame.columns.difference(qb.torrents)
-            self.torrentFrame.drop(columns=difference, inplace=True, errors="ignore")
-        except Exception:
-            self.torrentFrame = pd.DataFrame()
-
         # new data
         now = pd.Timestamp.now()
-        qBittorrentRow = {"upload": qb.state["alltime_ul"], "download": qb.state["alltime_dl"]}
-        qBittorrentRow = pd.DataFrame(qBittorrentRow, index=[now])
+        qBittorrentRow = pd.DataFrame(
+            {"upload": qb.state["alltime_ul"], "download": qb.state["alltime_dl"]}, index=[now]
+        )
         torrentRow = pd.DataFrame({k: v["uploaded"] for k, v in qb.torrents.items()}, index=[now])
 
         # save the result
-        self.qBittorrentFrame = self.qBittorrentFrame.append(qBittorrentRow, sort=False)
-        self.torrentFrame = self.torrentFrame.append(torrentRow, sort=False)
+        try:
+            self.qBittorrentFrame = self.qBittorrentFrame.last("7D").append(qBittorrentRow)
+        except Exception:
+            self.qBittorrentFrame = qBittorrentRow
+        try:
+            difference = self.torrentFrame.columns.difference(qb.torrents)
+            if not difference.empty:
+                self.torrentFrame.drop(columns=difference, inplace=True, errors="ignore")
+            self.torrentFrame.dropna(how="all", inplace=True)
+            self.torrentFrame = self.torrentFrame.append(torrentRow)
+        except Exception:
+            self.torrentFrame = torrentRow
         self.frameHash = self._hash_dataframe()
 
         # qBittorrent speed
         speeds = self.qBittorrentFrame.last("H").resample("S").ffill().diff().mean()
-        speeds = speeds.where(pd.notnull(speeds), None)
         qb.upspeed = speeds["upload"]
         qb.dlspeed = speeds["download"]
-
         print(f"qBittorrent average speed in last hour, ul: {humansize(qb.upspeed)}/s, dl: {humansize(qb.dlspeed)}/s.")
 
     def get_low_speed(self, threshold: int):
@@ -312,8 +300,9 @@ def load_data(datafile: str):
     try:
         with open(datafile, mode="rb") as f:
             data = pickle.load(f)
-        assert data.integrity_test()
-    except Exception:
+        assert data.integrity_test(), "Testing data intergrity failed."
+    except Exception as e:
+        print(f"Loading data from {datafile} failed: {e}")
         try:
             os.rename(datafile, f"{datafile}_{pd.Timestamp.now().strftime('%y%m%d_%H%M%S')}")
         except Exception:
@@ -388,16 +377,18 @@ def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
         for tr in soup.select("#form_torrent table.torrents > tr:not(:nth-of-type(1))"):
             try:
                 td = tr.find_all("td", recursive=False)
-
+                downloader = to_int(td[6].get_text())
+                if downloader <= 30:
+                    continue
                 link = td[1].find("a", href=re_download)["href"]
                 tid = re.search(r"id=([0-9]+)", link).group(1)
                 if tid in data.mteamHistory:
                     continue
-
                 timelimit = td[1].find(string=re_timelimit)
+                if timelimit and "日" not in timelimit:
+                    continue
                 uploader = to_int(td[5].get_text())
-                downloader = to_int(td[6].get_text())
-                if downloader <= 20 or uploader == 0 or (timelimit and "日" not in timelimit):
+                if uploader == 0:
                     continue
 
                 title = td[1].find("a", href=re_details, string=True)
