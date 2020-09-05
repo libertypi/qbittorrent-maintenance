@@ -68,7 +68,7 @@ class qBittorrent:
                             else:
                                 os.remove(entry.path)
                         except Exception as e:
-                            print(f"Deletion Failed. {e}")
+                            print("Deletion Failed:", e)
                             continue
                     refresh = True
                     log.append("Cleanup", None, entry.name)
@@ -372,7 +372,7 @@ def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
                 soup = BeautifulSoup(response.content, "html.parser")
                 if "login.php" in response.url or "登錄" in soup.title.string:
                     assert i < 4, "login failed."
-                    print(f"Login...")
+                    print("Login...")
                     session.post(login_page, data=payload, headers=login_referer)
                 else:
                     break
