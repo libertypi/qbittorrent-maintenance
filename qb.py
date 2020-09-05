@@ -36,12 +36,9 @@ class qBittorrent:
         self.state = maindata["server_state"]
         self.torrents = maindata["torrents"]
 
-        self.removeList = {}
-        self.removeCand = {}
+        self.removeList = self.removeCand = None
         self.newTorrent = {}
-        self.removeListSize = 0
-        self.removeCandSize = 0
-        self.newTorrentSize = 0
+        self.removableSize = self.demandSize = 0
         self.dlspeed = self.upspeed = None
         self._init_freeSpace(self.state["free_space_on_disk"])
 
@@ -49,14 +46,6 @@ class qBittorrent:
         response = requests.get(urljoin(self.api_baseurl, path), **kwargs)
         response.raise_for_status()
         return response
-
-    def _init_freeSpace(self, free_space_on_disk):
-        self.freeSpace = self.availSpace = (
-            free_space_on_disk - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
-        )
-
-    def _update_availSpace(self):
-        self.availSpace = self.freeSpace + self.removeListSize + self.removeCandSize - self.newTorrentSize
 
     def clean_seedDir(self):
         if not self.seedDir:
@@ -92,98 +81,57 @@ class qBittorrent:
         if self.state["up_rate_limit"] <= self.upspeedThreshold or self.state["use_alt_speed_limits"]:
             return False
         try:
-            return self.dlspeed < self.dlspeedThreshold and self.upspeed < self.upspeedThreshold
+            return self.upspeed < self.upspeedThreshold and self.dlspeed < self.dlspeedThreshold
         except Exception:
             return False
 
     def build_remove_lists(self, data):
+        torrents = self.torrents
+        thresholdPerTorrent = self.upspeedThreshold // (len(torrents) ** 2)
         oneDayAgo = pd.Timestamp.now().timestamp() - 86400  # Epoch timestamp
-        singleSpeedThreshold = self.upspeedThreshold // (len(self.torrents) ** 2)
 
-        for k, speed in data.speed_sorted().items():
-            v = self.torrents[k]
-            if speed is None or v["added_on"] > oneDayAgo:
-                continue
-
-            if self.availSpace < 0:
-                self.add_removes(k, v["size"], v["name"], conditional=False)
-
-            elif (
-                speed <= singleSpeedThreshold
-                or 0 < v["last_activity"] <= oneDayAgo
-                or (v["num_incomplete"] <= 3 and v["dlspeed"] == v["upspeed"] == 0)
-            ):
-                self.add_removes(k, v["size"], v["name"], conditional=True)
-
-    def add_removes(self, key: str, size: int, name: str, conditional: bool):
-        """conditional:
-        True: to candidate list, will be removed if better torrent found.
-        False: to remove list, will be removed no matter what.
-        """
-        if conditional:
-            self.removeCand[key] = size
-            self.removeCandSize += size
-            displayName = "remove candidates"
-        else:
-            self.removeList[key] = size
-            self.removeListSize += size
-            displayName = "removes"
-
+        lowSpeed = data.get_low_speed(thresholdPerTorrent)
+        self.removeCand = tuple((k, torrents[k]["size"]) for k in lowSpeed if torrents[k]["added_on"] < oneDayAgo)
+        self.removableSize = sum(i[1] for i in self.removeCand)
         self._update_availSpace()
-        print(f"Add to {displayName}: {name}, size: {humansize(size)}")
+
+        if debug:
+            for k, v in self.removeCand:
+                print(f'Add remove candidates: {torrents[k]["name"]}, size: {humansize(v)}')
 
     def add_torrent(self, filename: str, content: bytes, size: int):
-        self.newTorrent[filename] = content
-        self.newTorrentSize += size
-        self._update_availSpace()
+        if filename not in self.newTorrent:
+            self.newTorrent[filename] = content
+            self.demandSize += size
+            self._update_availSpace()
+            return True
+        print(f"Error: {filename} has already been added.")
+        return False
+
+    def _init_freeSpace(self, free_space_on_disk):
+        self.freeSpace = self.availSpace = (
+            free_space_on_disk - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
+        )
+
+    def _update_availSpace(self):
+        self.availSpace = self.freeSpace + self.removableSize - self.demandSize
 
     def promote_candidates(self):
-        targetSize = self.newTorrentSize - self.freeSpace - self.removeListSize
-        if targetSize > 0 and self.removeCand:
-            print(f"Total size: {humansize(self.newTorrentSize)}, space to free: {humansize(targetSize)}")
-
-            minKeys, minSum = self.findMinSum(self.removeCand, targetSize)
-            for k in minKeys:
-                self.removeList[k] = self.removeCand.pop(k)
-            self.removeCandSize -= minSum
-            self.removeListSize += minSum
-            self._update_availSpace()
-
-            print(f"Removals: {len(minKeys)}, size: {humansize(minSum)}")
-
-    def apply_removes(self):
-        if self.removeList:
-            path = "torrents/delete"
-            payload = {"hashes": "|".join(self.removeList), "deleteFiles": True}
-            self._request(path, params=payload)
-            for k, v in self.removeList.items():
-                log.append("Remove", v, self.torrents[k]["name"])
-
-    def upload_torrent(self):
-        if self.newTorrent:
-            if not self.watchDir:
-                print("Uploading torrent to remote host is not support yet.")
-                return
-            if not os.path.exists(self.watchDir):
-                os.mkdir(self.watchDir)
-            for filename, content in self.newTorrent.items():
-                path = os.path.join(self.watchDir, filename)
-                with open(path, "wb") as f:
-                    f.write(content)
-
-    def resume_paused(self):
-        errors = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
-        if any(i["state"] in errors for i in self.torrents.values()):
-            print("Resume torrents.")
-            path = "torrents/resume"
-            payload = {"hashes": "all"}
-            self._request(path, params=payload)
+        targetSize = self.demandSize - self.freeSpace
+        if targetSize > 0:
+            print(
+                f"Demand space: {humansize(self.demandSize)},",
+                f"free space: {humansize(self.freeSpace)},",
+                f"space to free: {humansize(targetSize)}",
+            )
+            self.removeList, minSum = self.findMinSum(self.removeCand, targetSize)
+            print(f"Removals: {len(self.removeList)}, size: {humansize(minSum)}")
 
     @staticmethod
-    def findMinSum(candidates: dict, targetSize: int):
+    def findMinSum(pairs: tuple, targetSize: int):
         """Find the minimum sum of a list of numbers to reach the target size.
-        Returns the keys and the sum.
-        Input should be a dict of key-number pairs.
+        Input should be a list of key-number pairs. Returns the pairs and the sum.
+        If the sum is lesser than the target, return the original pairs.
         """
 
         def _innerLoop(parentKeys=0, parentSum=0, i=0):
@@ -197,15 +145,42 @@ class qBittorrent:
                     else:
                         minKeys, minSum = currentKeys, currentSum
 
-        candidates = tuple(candidates.items())
-        nums = tuple(i[1] for i in candidates)
+        nums = tuple(i[1] for i in pairs)
         minKeys, minSum = 2 ** len(nums) - 1, sum(nums)
-        if minSum >= targetSize:
-            masks = tuple(pow(2, i) for i in range(len(candidates)))
+        if minSum > targetSize:
+            masks = tuple(pow(2, i) for i in range(len(nums)))
             _innerLoop()
-            minKeys = tuple(i[0] for n, i in enumerate(candidates) if minKeys & masks[n])
+            minKeys = tuple(i for n, i in enumerate(pairs) if minKeys & masks[n])
             return minKeys, minSum
-        return None
+        return pairs, minSum
+
+    def apply_removes(self):
+        if self.removeList:
+            path = "torrents/delete"
+            payload = {"hashes": "|".join(i[0] for i in self.removeList), "deleteFiles": True}
+            self._request(path, params=payload)
+            for k, v in self.removeList:
+                log.append("Remove", v, self.torrents[k]["name"])
+
+    def upload_torrent(self):
+        if self.newTorrent:
+            try:
+                if not os.path.exists(self.watchDir):
+                    os.mkdir(self.watchDir)
+                for filename, content in self.newTorrent.items():
+                    path = os.path.join(self.watchDir, filename)
+                    with open(path, "wb") as f:
+                        f.write(content)
+            except Exception as e:
+                log.append("Error", None, f"Writing torrent to {self.watchDir} failed: {e}")
+
+    def resume_paused(self):
+        errors = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
+        if any(i["state"] in errors for i in self.torrents.values()):
+            print("Resume torrents.")
+            path = "torrents/resume"
+            payload = {"hashes": "all"}
+            self._request(path, params=payload)
 
 
 class Data:
@@ -277,9 +252,9 @@ class Data:
 
         print(f"qBittorrent average speed in last hour, ul: {humansize(qb.upspeed)}/s, dl: {humansize(qb.dlspeed)}/s.")
 
-    def speed_sorted(self):
+    def get_low_speed(self, threshold: int):
         speeds = self.torrentFrame.last("D").resample("S").ffill().diff().mean()
-        return speeds.where(pd.notnull(speeds), None).sort_values()
+        return speeds[speeds < threshold].index
 
     def dump(self, datafile: str, backupDir=None):
         try:
@@ -355,11 +330,13 @@ def copy_backup(source, dest):
 
 
 def humansize(size, suffixes=("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB")):
-    if isinstance(size, (int, float)):
+    try:
         for suffix in suffixes:
             size /= 1024
             if size < 1024:
                 return "{:.2f} {}".format(size, suffix)
+    except Exception:
+        pass
     return "---"
 
 
@@ -401,12 +378,12 @@ def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
                     break
             except Exception as e:
                 if i == 4:
-                    print(f"Failed: {e}")
+                    print(e)
                     return
                 print(f"Retrying... Attempt: {i+1}, Error: {e}")
                 session = data.init_session()
 
-        print("Connection success.")
+        print("Fetching feed success.")
 
         for tr in soup.select("#form_torrent table.torrents > tr:not(:nth-of-type(1))"):
             try:
@@ -418,25 +395,27 @@ def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
                     continue
 
                 timelimit = td[1].find(string=re_timelimit)
-                size = size_convert(td[4].get_text())
                 uploader = to_int(td[5].get_text())
                 downloader = to_int(td[6].get_text())
-                if downloader < 20 or size > qb.availSpace or (timelimit and "日" not in timelimit) or uploader == 0:
+                if downloader <= 20 or uploader == 0 or (timelimit and "日" not in timelimit):
                     continue
 
                 title = td[1].find("a", href=re_details, string=True)
                 title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
-
                 date = td[3].find(title=re_date)["title"]
                 date = pd.Timestamp(date).timestamp()
+                size = size_convert(td[4].get_text())
 
                 results.append((downloader, date, size, tid, title, link))
             except Exception as e:
-                print("Reading page error:", e)
+                print("Parsing page error:", e)
 
-    print(f"Done. {len(results)} torrents collected.")
     results.sort(reverse=True)
+    print(f"Done. {len(results)} torrents collected.")
     for downloader, date, size, tid, title, link in results:
+        if size > qb.availSpace:
+            continue
+
         try:
             response = session.get(urljoin(domain, link))
             response.raise_for_status()
@@ -445,12 +424,12 @@ def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
             return
 
         filename = f"{tid}.torrent"
-        qb.add_torrent(filename, response.content, size)
-        log.append("Download", size, title)
-        print(f"New torrent: {title}, size: {humansize(size)}, max avail: {humansize(qb.availSpace)}")
-
-        if not debug:
-            data.mteamHistory.add(tid)
+        if qb.add_torrent(filename, response.content, size):
+            log.append("Download", size, title)
+            if debug:
+                print(f"New torrent: {title}, size: {humansize(size)}, max avail: {humansize(qb.availSpace)}")
+            else:
+                data.mteamHistory.add(tid)
 
         if len(qb.newTorrent) >= maxDownloads:
             return
@@ -483,7 +462,7 @@ if __name__ == "__main__":
         qb.build_remove_lists(data)
         if qb.availSpace > 0:
             mteam_download(config.mteamFeeds, config.mteamAccount, maxDownloads=2)
-            qb.promote_candidates()
+        qb.promote_candidates()
         if not debug:
             qb.apply_removes()
             qb.upload_torrent()
