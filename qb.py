@@ -213,6 +213,7 @@ class Data:
         return (hash_pandas_object(self.qBittorrentFrame).sum(), hash_pandas_object(self.torrentFrame).sum())
 
     def init_session(self) -> requests.session:
+        """Initialize a new requests session."""
         self.session = requests.session()
         self.session.headers.update(
             {
