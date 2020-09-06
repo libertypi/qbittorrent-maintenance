@@ -34,6 +34,7 @@ class qBittorrent:
 
         self.removeList = self.removeCand = None
         self.newTorrent = {}
+        self.newTorrentMinPeer = 40
         self.removableSize = self.demandSize = 0
         self._init_freeSpace(self.state["free_space_on_disk"])
 
@@ -75,18 +76,19 @@ class qBittorrent:
             return True
         if self.state["up_rate_limit"] <= self.upSpeedThresh or self.state["use_alt_speed_limits"]:
             return False
-        speeds = data.get_qb_speed()
-        print(f"qBittorrent average speed in last hour, ul: {humansize(speeds[0])}/s, dl: {humansize(speeds[1])}/s.")
-        return speeds[0] < self.upSpeedThresh and speeds[1] < self.dlSpeedThresh
+        return data.is_in_lowspeed(self.upSpeedThresh, self.dlSpeedThresh)
 
     def build_remove_lists(self, data):
         torrents = self.torrents
         threshPerTorrent = self.upSpeedThresh // (len(torrents) ** 2)
         oneDayAgo = pd.Timestamp.now().timestamp() - 86400
 
-        lowSpeed = data.get_low_speed((k for k, v in torrents.items() if v["added_on"] < oneDayAgo), threshPerTorrent)
+        lowSpeed = data.get_slow_torrents(
+            (k for k, v in torrents.items() if v["added_on"] < oneDayAgo), threshPerTorrent
+        )
         self.removeCand = tuple((k, torrents[k]["size"]) for k in lowSpeed)
         self.removableSize = sum(i[1] for i in self.removeCand)
+        self.newTorrentMinPeer = max(*(torrents[k]["num_incomplete"] for k in lowSpeed), self.newTorrentMinPeer)
         self._update_availSpace()
 
         if debug:
@@ -209,15 +211,11 @@ class Data:
 
     def record(self, qb: qBittorrent):
         """Record qBittorrent traffic data to pandas DataFrame."""
-
-        # new data
         now = pd.Timestamp.now()
         qBittorrentRow = pd.DataFrame(
             {"upload": qb.state["alltime_ul"], "download": qb.state["alltime_dl"]}, index=[now]
         )
         torrentRow = pd.DataFrame({k: v["uploaded"] for k, v in qb.torrents.items()}, index=[now])
-
-        # save the result
         try:
             self.qBittorrentFrame = self.qBittorrentFrame.last("7D").append(qBittorrentRow)
         except Exception:
@@ -232,11 +230,16 @@ class Data:
             self.torrentFrame = torrentRow
         self.frameHash = self._hash_dataframe()
 
-    def get_qb_speed(self):
+    def is_in_lowspeed(self, upSpeedThresh: int, dlSpeedThresh: int) -> bool:
         speeds = self.qBittorrentFrame.last("H").resample("S").ffill().diff().mean()
-        return speeds["upload"], speeds["download"]
+        print(
+            "qBittorrent average speed in last hour, ul: {}/s, dl: {}/s.".format(
+                humansize(speeds["upload"]), humansize(speeds["download"])
+            )
+        )
+        return 0 <= speeds["upload"] < upSpeedThresh and 0 <= speeds["download"] < dlSpeedThresh
 
-    def get_low_speed(self, keys, speedThresh: int):
+    def get_slow_torrents(self, keys, speedThresh: int) -> pd.Index:
         speeds = self.torrentFrame
         speeds = speeds.loc[speeds.last("D").index, keys].resample("S").ffill().diff().mean()
         return speeds[speeds < speedThresh].index
@@ -346,9 +349,10 @@ def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
     re_date = re.compile(r"20[0-9]{2}(\W[0-9]{2}){2}\s+([0-9]{2}\W){2}[0-9]{2}")
     session = data.session
     mteamHistory = data.mteamHistory
+    newTorrentMinPeer = qb.newTorrentMinPeer
     results = []
 
-    print("Connecting to M-Team... Max avail space:", humansize(qb.availSpace))
+    print(f"Connecting to M-Team... Max avail space: {humansize(qb.availSpace)}, minimum peers: {newTorrentMinPeer}")
     for feed in mteamFeeds:
         feed = urljoin(domain, feed)
 
@@ -376,7 +380,7 @@ def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
             try:
                 td = tr.find_all("td", recursive=False)
                 downloader = to_int(td[6].get_text())
-                if downloader <= 30:
+                if downloader <= newTorrentMinPeer:
                     continue
                 link = td[1].find("a", href=re_download)["href"]
                 tid = re.search(r"id=([0-9]+)", link).group(1)
