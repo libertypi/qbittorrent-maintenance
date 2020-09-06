@@ -15,8 +15,8 @@ sizes = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGT"), (1024 ** s
 
 class qBittorrent:
     spaceQuota = 50 * sizes["GiB"]
-    dlspeedThreshold = 8 * sizes["MiB"]
-    upspeedThreshold = 2.6 * sizes["MiB"]
+    upSpeedThresh = 2.6 * sizes["MiB"]
+    dlSpeedThresh = 8 * sizes["MiB"]
 
     def __init__(self, qBittorrentHost: str, seedDir: str, watchDir: str):
         """api_host: http://localhost"""
@@ -35,7 +35,6 @@ class qBittorrent:
         self.removeList = self.removeCand = None
         self.newTorrent = {}
         self.removableSize = self.demandSize = 0
-        self.dlspeed = self.upspeed = None
         self._init_freeSpace(self.state["free_space_on_disk"])
 
     def _request(self, path, **kwargs):
@@ -71,23 +70,22 @@ class qBittorrent:
         if refresh:
             self._init_freeSpace(shutil.disk_usage(self.seedDir).free)
 
-    def action_needed(self):
+    def action_needed(self, data):
         if self.freeSpace < 0:
             return True
-        if self.state["up_rate_limit"] <= self.upspeedThreshold or self.state["use_alt_speed_limits"]:
+        if self.state["up_rate_limit"] <= self.upSpeedThresh or self.state["use_alt_speed_limits"]:
             return False
-        try:
-            return self.upspeed < self.upspeedThreshold and self.dlspeed < self.dlspeedThreshold
-        except Exception:
-            return False
+        speeds = data.get_qb_speed()
+        print(f"qBittorrent average speed in last hour, ul: {humansize(speeds[0])}/s, dl: {humansize(speeds[1])}/s.")
+        return speeds[0] < self.upSpeedThresh and speeds[1] < self.dlSpeedThresh
 
     def build_remove_lists(self, data):
         torrents = self.torrents
-        thresholdPerTorrent = self.upspeedThreshold // (len(torrents) ** 2)
-        oneDayAgo = pd.Timestamp.now().timestamp() - 86400  # Epoch timestamp
+        threshPerTorrent = self.upSpeedThresh // (len(torrents) ** 2)
+        oneDayAgo = pd.Timestamp.now().timestamp() - 86400
 
-        lowSpeed = data.get_low_speed(thresholdPerTorrent)
-        self.removeCand = tuple((k, torrents[k]["size"]) for k in lowSpeed if torrents[k]["added_on"] < oneDayAgo)
+        lowSpeed = data.get_low_speed((k for k, v in torrents.items() if v["added_on"] < oneDayAgo), threshPerTorrent)
+        self.removeCand = tuple((k, torrents[k]["size"]) for k in lowSpeed)
         self.removableSize = sum(i[1] for i in self.removeCand)
         self._update_availSpace()
 
@@ -234,15 +232,14 @@ class Data:
             self.torrentFrame = torrentRow
         self.frameHash = self._hash_dataframe()
 
-        # qBittorrent speed
+    def get_qb_speed(self):
         speeds = self.qBittorrentFrame.last("H").resample("S").ffill().diff().mean()
-        qb.upspeed = speeds["upload"]
-        qb.dlspeed = speeds["download"]
-        print(f"qBittorrent average speed in last hour, ul: {humansize(qb.upspeed)}/s, dl: {humansize(qb.dlspeed)}/s.")
+        return speeds["upload"], speeds["download"]
 
-    def get_low_speed(self, threshold: int):
-        speeds = self.torrentFrame.last("D").resample("S").ffill().diff().mean()
-        return speeds[speeds < threshold].index
+    def get_low_speed(self, keys, speedThresh: int):
+        speeds = self.torrentFrame
+        speeds = speeds.loc[speeds.last("D").index, keys].resample("S").ffill().diff().mean()
+        return speeds[speeds < speedThresh].index
 
     def dump(self, datafile: str, backupDir=None):
         try:
@@ -348,6 +345,7 @@ def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
     re_timelimit = re.compile(r"限時：")
     re_date = re.compile(r"20[0-9]{2}(\W[0-9]{2}){2}\s+([0-9]{2}\W){2}[0-9]{2}")
     session = data.session
+    mteamHistory = data.mteamHistory
     results = []
 
     print("Connecting to M-Team... Max avail space:", humansize(qb.availSpace))
@@ -382,7 +380,7 @@ def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
                     continue
                 link = td[1].find("a", href=re_download)["href"]
                 tid = re.search(r"id=([0-9]+)", link).group(1)
-                if tid in data.mteamHistory:
+                if tid in mteamHistory:
                     continue
                 timelimit = td[1].find(string=re_timelimit)
                 if timelimit and "日" not in timelimit:
@@ -420,7 +418,7 @@ def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
             if debug:
                 print(f"New torrent: {title}, size: {humansize(size)}, max avail: {humansize(qb.availSpace)}")
             else:
-                data.mteamHistory.add(tid)
+                mteamHistory.add(tid)
 
         if len(qb.newTorrent) >= maxDownloads:
             return
@@ -449,7 +447,7 @@ if __name__ == "__main__":
     data.record(qb)
     qb.clean_seedDir()
 
-    if qb.action_needed() or debug:
+    if qb.action_needed(data) or debug:
         qb.build_remove_lists(data)
         if qb.availSpace > 0:
             mteam_download(config.mteamFeeds, config.mteamAccount, maxDownloads=2)
