@@ -36,6 +36,7 @@ class qBittorrent:
         self.newTorrent = {}
         self.newTorrentMinPeer = 40
         self.removableSize = self.demandSize = 0
+        self.upSpeed = self.dlSpeed = None
         self._init_freeSpace(self.state["free_space_on_disk"])
 
     def _request(self, path, **kwargs):
@@ -71,12 +72,12 @@ class qBittorrent:
         if refresh:
             self._init_freeSpace(shutil.disk_usage(self.seedDir).free)
 
-    def action_needed(self, data):
+    def action_needed(self) -> bool:
         if self.freeSpace < 0:
             return True
         if self.state["up_rate_limit"] <= self.upSpeedThresh or self.state["use_alt_speed_limits"]:
             return False
-        return data.is_in_lowspeed(self.upSpeedThresh, self.dlSpeedThresh)
+        return 0 <= self.upSpeed < self.upSpeedThresh and 0 <= self.dlSpeed < self.dlSpeedThresh
 
     def build_remove_lists(self, data):
         torrents = self.torrents
@@ -200,7 +201,7 @@ class Data:
     def _hash_dataframe(self):
         return (hash_pandas_object(self.qBittorrentFrame).sum(), hash_pandas_object(self.torrentFrame).sum())
 
-    def init_session(self):
+    def init_session(self) -> requests.session:
         self.session = requests.session()
         self.session.headers.update(
             {
@@ -230,14 +231,14 @@ class Data:
             self.torrentFrame = torrentRow
         self.frameHash = self._hash_dataframe()
 
-    def is_in_lowspeed(self, upSpeedThresh: int, dlSpeedThresh: int) -> bool:
         speeds = self.qBittorrentFrame.last("H").resample("S").ffill().diff().mean()
+        qb.upSpeed = speeds["upload"]
+        qb.dlSpeed = speeds["download"]
         print(
             "qBittorrent average speed in last hour, ul: {}/s, dl: {}/s.".format(
                 humansize(speeds["upload"]), humansize(speeds["download"])
             )
         )
-        return 0 <= speeds["upload"] < upSpeedThresh and 0 <= speeds["download"] < dlSpeedThresh
 
     def get_slow_torrents(self, keys, speedThresh: int) -> pd.Index:
         speeds = self.torrentFrame
@@ -451,7 +452,7 @@ if __name__ == "__main__":
     data.record(qb)
     qb.clean_seedDir()
 
-    if qb.action_needed(data) or debug:
+    if qb.action_needed() or debug:
         qb.build_remove_lists(data)
         if qb.availSpace > 0:
             mteam_download(config.mteamFeeds, config.mteamAccount, maxDownloads=2)
