@@ -94,7 +94,9 @@ class qBittorrent:
 
         if debug:
             print(
-                f"Add remove candidates, total: {humansize(self.removableSize)}, threshold: {humansize(threshPerTorrent)}/s:"
+                "Add remove candidates, total: {}, threshold: {}/s:".format(
+                    humansize(self.removableSize), humansize(threshPerTorrent)
+                )
             )
             for k, v in self.removeCand:
                 print(f'Name: {torrents[k]["name"]}, size: {humansize(v)}')
@@ -108,7 +110,7 @@ class qBittorrent:
         print(f"Error: {filename} has already been added.")
         return False
 
-    def _init_freeSpace(self, free_space_on_disk):
+    def _init_freeSpace(self, free_space_on_disk: int):
         self.freeSpace = self.availSpace = (
             free_space_on_disk - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
         )
@@ -314,14 +316,14 @@ def load_data(datafile: str):
     try:
         with open(datafile, mode="rb") as f:
             data = pickle.load(f)
-        assert data.integrity_test(), "Testing data intergrity failed."
+        assert data.integrity_test(), "Intergrity check failed."
     except Exception as e:
         print(f"Loading data from {datafile} failed: {e}")
-        try:
-            if not debug:
+        if not debug:
+            try:
                 os.rename(datafile, f"{datafile}_{pd.Timestamp.now().strftime('%y%m%d_%H%M%S')}")
-        except Exception:
-            pass
+            except Exception:
+                pass
         data = Data()
     return data
 
