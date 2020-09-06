@@ -15,11 +15,10 @@ sizes = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGT"), (1024 ** s
 
 class qBittorrent:
     spaceQuota = 50 * sizes["GiB"]
-    upSpeedThresh = 2.6 * sizes["MiB"]
+    upSpeedThresh = 2.5 * sizes["MiB"]
     dlSpeedThresh = 8 * sizes["MiB"]
 
     def __init__(self, qBittorrentHost: str, seedDir: str, watchDir: str):
-        """api_host: http://localhost"""
 
         self.api_baseurl = urljoin(qBittorrentHost, "api/v2/")
         self.seedDir = os.path.abspath(seedDir) if seedDir else None
@@ -57,8 +56,9 @@ class qBittorrent:
             for entry in it:
                 name = os.path.splitext(entry.name)[0] if entry.name.endswith(".!qB") else entry.name
                 if name not in names:
-                    print("Cleanup:", entry.name)
-                    if not debug:
+                    if debug:
+                        print("Cleanup:", entry.name)
+                    else:
                         try:
                             if entry.is_dir():
                                 shutil.rmtree(entry.path)
@@ -93,8 +93,11 @@ class qBittorrent:
         self._update_availSpace()
 
         if debug:
+            print(
+                f"Add remove candidates, total: {humansize(self.removableSize)}, threshold: {humansize(threshPerTorrent)}/s:"
+            )
             for k, v in self.removeCand:
-                print(f'Add remove candidates: {torrents[k]["name"]}, size: {humansize(v)}')
+                print(f'Name: {torrents[k]["name"]}, size: {humansize(v)}')
 
     def add_torrent(self, filename: str, content: bytes, size: int):
         if filename not in self.newTorrent:
@@ -116,13 +119,14 @@ class qBittorrent:
     def promote_candidates(self):
         targetSize = self.demandSize - self.freeSpace
         if targetSize > 0:
-            print(
-                f"Demand space: {humansize(self.demandSize)},",
-                f"free space: {humansize(self.freeSpace)},",
-                f"space to free: {humansize(targetSize)}",
-            )
             self.removeList, minSum = self.findMinSum(self.removeCand, targetSize)
-            print(f"Removals: {len(self.removeList)}, size: {humansize(minSum)}")
+            if debug:
+                print(
+                    f"Demand space: {humansize(self.demandSize)},",
+                    f"free space: {humansize(self.freeSpace)},",
+                    f"space to free: {humansize(targetSize)}",
+                )
+                print(f"Removals: {len(self.removeList)}, size: {humansize(minSum)}")
 
     @staticmethod
     def findMinSum(pairs: tuple, targetSize: int):
@@ -143,8 +147,9 @@ class qBittorrent:
                         minKeys, minSum = currentKeys, currentSum
 
         nums = tuple(i[1] for i in pairs)
-        minKeys, minSum = 2 ** len(nums) - 1, sum(nums)
+        minSum = sum(nums)
         if minSum > targetSize:
+            minKeys = 2 ** len(nums) - 1
             masks = tuple(pow(2, i) for i in range(len(nums)))
             _innerLoop()
             minKeys = tuple(i for n, i in enumerate(pairs) if minKeys & masks[n])
@@ -153,14 +158,17 @@ class qBittorrent:
 
     def apply_removes(self):
         if self.removeList:
-            path = "torrents/delete"
-            payload = {"hashes": "|".join(i[0] for i in self.removeList), "deleteFiles": True}
-            self._request(path, params=payload)
+            if not debug:
+                path = "torrents/delete"
+                payload = {"hashes": "|".join(i[0] for i in self.removeList), "deleteFiles": True}
+                self._request(path, params=payload)
             for k, v in self.removeList:
                 log.append("Remove", v, self.torrents[k]["name"])
 
     def upload_torrent(self):
         if self.newTorrent:
+            if debug:
+                return
             try:
                 if not os.path.exists(self.watchDir):
                     os.mkdir(self.watchDir)
@@ -175,9 +183,10 @@ class qBittorrent:
         errors = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
         if any(i["state"] in errors for i in self.torrents.values()):
             print("Resume torrents.")
-            path = "torrents/resume"
-            payload = {"hashes": "all"}
-            self._request(path, params=payload)
+            if not debug:
+                path = "torrents/resume"
+                payload = {"hashes": "all"}
+                self._request(path, params=payload)
 
 
 class Data:
@@ -217,6 +226,7 @@ class Data:
             {"upload": qb.state["alltime_ul"], "download": qb.state["alltime_dl"]}, index=[now]
         )
         torrentRow = pd.DataFrame({k: v["uploaded"] for k, v in qb.torrents.items()}, index=[now])
+
         try:
             self.qBittorrentFrame = self.qBittorrentFrame.last("7D").append(qBittorrentRow)
         except Exception:
@@ -225,7 +235,7 @@ class Data:
             difference = self.torrentFrame.columns.difference(qb.torrents)
             if not difference.empty:
                 self.torrentFrame.drop(columns=difference, inplace=True, errors="ignore")
-            self.torrentFrame.dropna(how="all", inplace=True)
+                self.torrentFrame.dropna(how="all", inplace=True)
             self.torrentFrame = self.torrentFrame.append(torrentRow)
         except Exception:
             self.torrentFrame = torrentRow
@@ -234,11 +244,12 @@ class Data:
         speeds = self.qBittorrentFrame.last("H").resample("S").ffill().diff().mean()
         qb.upSpeed = speeds["upload"]
         qb.dlSpeed = speeds["download"]
-        print(
-            "qBittorrent average speed in last hour, ul: {}/s, dl: {}/s.".format(
-                humansize(speeds["upload"]), humansize(speeds["download"])
+        if debug:
+            print(
+                "qBittorrent average speed in last hour, ul: {}/s, dl: {}/s.".format(
+                    humansize(speeds["upload"]), humansize(speeds["download"])
+                )
             )
-        )
 
     def get_slow_torrents(self, keys, speedThresh: int) -> pd.Index:
         speeds = self.torrentFrame
@@ -246,6 +257,8 @@ class Data:
         return speeds[speeds < speedThresh].index
 
     def dump(self, datafile: str, backupDir=None):
+        if debug:
+            return
         try:
             with open(datafile, "wb") as f:
                 pickle.dump(self, f)
@@ -305,7 +318,8 @@ def load_data(datafile: str):
     except Exception as e:
         print(f"Loading data from {datafile} failed: {e}")
         try:
-            os.rename(datafile, f"{datafile}_{pd.Timestamp.now().strftime('%y%m%d_%H%M%S')}")
+            if not debug:
+                os.rename(datafile, f"{datafile}_{pd.Timestamp.now().strftime('%y%m%d_%H%M%S')}")
         except Exception:
             pass
         data = Data()
@@ -457,9 +471,8 @@ if __name__ == "__main__":
         if qb.availSpace > 0:
             mteam_download(config.mteamFeeds, config.mteamAccount, maxDownloads=2)
         qb.promote_candidates()
-        if not debug:
-            qb.apply_removes()
-            qb.upload_torrent()
+        qb.apply_removes()
+        qb.upload_torrent()
     else:
         print("System is healthy, no action needed.")
 
