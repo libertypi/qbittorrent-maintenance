@@ -83,7 +83,7 @@ class qBittorrent:
         trs = self.torrents
         oneDayAgo = pd.Timestamp.now().timestamp() - 86400
 
-        self.removeCand = tuple((k, trs[k]["size"]) for k in data.get_slow_trs() if trs[k]["added_on"] < oneDayAgo)
+        self.removeCand = tuple((k, trs[k]["size"]) for k in data.get_slows() if trs[k]["added_on"] < oneDayAgo)
         self.removableSize = sum(i[1] for i in self.removeCand)
         self.newTorrentMinPeer = max(*(trs[k[0]]["num_incomplete"] for k in self.removeCand), self.newTorrentMinPeer)
         self._update_availSpace()
@@ -243,7 +243,8 @@ class Data:
             )
         )
 
-    def get_slow_trs(self) -> pd.Index:
+    def get_slows(self) -> pd.Index:
+        """Trying to discover slow torrents using jenks natural breaks method."""
         speeds = self.torrentFrame
         speeds = speeds.last("D").resample("S").bfill().diff().mean()
 
@@ -253,7 +254,7 @@ class Data:
                 breaks = 4
             breaks = jenks_breaks(speeds, nb_class=breaks)[1]
         except Exception:
-            breaks = speeds.mean()
+            breaks = speeds.mean()  # data length is less than 3
 
         print(f"Threshold for slow torrents: {humansize(breaks)}/s")
         return speeds.loc[speeds <= breaks].index
