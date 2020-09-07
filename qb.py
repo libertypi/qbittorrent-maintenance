@@ -248,13 +248,11 @@ class Data:
         speeds = self.torrentFrame
         speeds = speeds.last("D").resample("S").bfill().diff().mean()
 
-        try:
-            breaks = speeds.count() - 1
-            if breaks > 4:
-                breaks = 4
-            breaks = jenks_breaks(speeds, nb_class=breaks)[1]
-        except Exception:
-            breaks = speeds.mean()  # data length is less than 3
+        breaks = speeds.count() - 1
+        if breaks >= 2:
+            breaks = jenks_breaks(speeds, nb_class=(4 if breaks > 4 else breaks))[1]
+        else:
+            breaks = speeds.mean()
 
         print(f"Threshold for slow torrents: {humansize(breaks)}/s")
         return speeds.loc[speeds <= breaks].index
