@@ -7,6 +7,7 @@ from sys import argv
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+from jenkspy import jenks_breaks
 from pandas.util import hash_pandas_object
 from requests.compat import urljoin
 
@@ -15,7 +16,7 @@ sizes = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGT"), (1024 ** s
 
 class qBittorrent:
     spaceQuota = 50 * sizes["GiB"]
-    upSpeedThresh = 2.5 * sizes["MiB"]
+    upSpeedThresh = 2.6 * sizes["MiB"]
     dlSpeedThresh = 8 * sizes["MiB"]
 
     def __init__(self, qBittorrentHost: str, seedDir: str, watchDir: str):
@@ -56,9 +57,8 @@ class qBittorrent:
             for entry in it:
                 name = os.path.splitext(entry.name)[0] if entry.name.endswith(".!qB") else entry.name
                 if name not in names:
-                    if debug:
-                        print("Cleanup:", entry.name)
-                    else:
+                    print("Cleanup:", entry.name)
+                    if not debug:
                         try:
                             if entry.is_dir():
                                 shutil.rmtree(entry.path)
@@ -80,26 +80,17 @@ class qBittorrent:
         return 0 <= self.upSpeed < self.upSpeedThresh and 0 <= self.dlSpeed < self.dlSpeedThresh
 
     def build_remove_lists(self, data):
-        torrents = self.torrents
-        threshPerTorrent = self.upSpeedThresh // (len(torrents) ** 2)
+        trs = self.torrents
         oneDayAgo = pd.Timestamp.now().timestamp() - 86400
 
-        lowSpeed = data.get_slow_torrents(
-            (k for k, v in torrents.items() if v["added_on"] < oneDayAgo), threshPerTorrent
-        )
-        self.removeCand = tuple((k, torrents[k]["size"]) for k in lowSpeed)
+        self.removeCand = tuple((k, trs[k]["size"]) for k in data.get_slow_trs() if trs[k]["added_on"] < oneDayAgo)
         self.removableSize = sum(i[1] for i in self.removeCand)
-        self.newTorrentMinPeer = max(*(torrents[k]["num_incomplete"] for k in lowSpeed), self.newTorrentMinPeer)
+        self.newTorrentMinPeer = max(*(trs[k[0]]["num_incomplete"] for k in self.removeCand), self.newTorrentMinPeer)
         self._update_availSpace()
 
-        if debug:
-            print(
-                "Add remove candidates, total: {}, threshold: {}/s:".format(
-                    humansize(self.removableSize), humansize(threshPerTorrent)
-                )
-            )
-            for k, v in self.removeCand:
-                print(f'Name: {torrents[k]["name"]}, size: {humansize(v)}')
+        print(f"Add remove candidates, total: {humansize(self.removableSize)}")
+        for k, v in self.removeCand:
+            print(f'Name: {trs[k]["name"]}, size: {humansize(v)}')
 
     def add_torrent(self, filename: str, content: bytes, size: int):
         if filename not in self.newTorrent:
@@ -121,14 +112,13 @@ class qBittorrent:
     def promote_candidates(self):
         targetSize = self.demandSize - self.freeSpace
         if targetSize > 0:
+            print(
+                f"Demand space: {humansize(self.demandSize)},",
+                f"free space: {humansize(self.freeSpace)},",
+                f"space to free: {humansize(targetSize)}",
+            )
             self.removeList, minSum = self.findMinSum(self.removeCand, targetSize)
-            if debug:
-                print(
-                    f"Demand space: {humansize(self.demandSize)},",
-                    f"free space: {humansize(self.freeSpace)},",
-                    f"space to free: {humansize(targetSize)}",
-                )
-                print(f"Removals: {len(self.removeList)}, size: {humansize(minSum)}")
+            print(f"Removals: {len(self.removeList)}, size: {humansize(minSum)}")
 
     @staticmethod
     def findMinSum(pairs: tuple, targetSize: int):
@@ -244,20 +234,29 @@ class Data:
             self.torrentFrame = torrentRow
         self.frameHash = self._hash_dataframe()
 
-        speeds = self.qBittorrentFrame.last("H").resample("S").ffill().diff().mean()
+        speeds = self.qBittorrentFrame.last("H").resample("S").bfill().diff().mean()
         qb.upSpeed = speeds["upload"]
         qb.dlSpeed = speeds["download"]
-        if debug:
-            print(
-                "qBittorrent average speed in last hour, ul: {}/s, dl: {}/s.".format(
-                    humansize(speeds["upload"]), humansize(speeds["download"])
-                )
+        print(
+            "qBittorrent average speed in last hour, ul: {}/s, dl: {}/s.".format(
+                humansize(speeds["upload"]), humansize(speeds["download"])
             )
+        )
 
-    def get_slow_torrents(self, keys, speedThresh: int) -> pd.Index:
+    def get_slow_trs(self) -> pd.Index:
         speeds = self.torrentFrame
-        speeds = speeds.loc[speeds.last("D").index, keys].resample("S").ffill().diff().mean()
-        return speeds[speeds < speedThresh].index
+        speeds = speeds.last("D").resample("S").bfill().diff().mean()
+
+        try:
+            breaks = speeds.count() - 1
+            if breaks > 4:
+                breaks = 4
+            breaks = jenks_breaks(speeds, nb_class=breaks)[1]
+        except Exception:
+            breaks = speeds.mean()
+
+        print(f"Threshold for slow torrents: {humansize(breaks)}/s")
+        return speeds.loc[speeds <= breaks].index
 
     def dump(self, datafile: str, backupDir=None):
         if debug:
@@ -437,10 +436,9 @@ def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
         filename = f"{tid}.torrent"
         if qb.add_torrent(filename, response.content, size):
             log.append("Download", size, title)
-            if debug:
-                print(f"New torrent: {title}, size: {humansize(size)}, max avail: {humansize(qb.availSpace)}")
-            else:
+            if not debug:
                 mteamHistory.add(tid)
+            print(f"New torrent: {title}, size: {humansize(size)}, max avail: {humansize(qb.availSpace)}")
 
         if len(qb.newTorrent) >= maxDownloads:
             return
