@@ -22,8 +22,11 @@ class qBittorrent:
     def __init__(self, qBittorrentHost: str, seedDir: str, watchDir: str):
 
         self.api_baseurl = urljoin(qBittorrentHost, "api/v2/")
-        self.seedDir = os.path.abspath(seedDir) if seedDir else None
-        self.watchDir = os.path.abspath(watchDir) if watchDir else None
+        try:
+            self.seedDir = os.path.abspath(seedDir)
+            self.watchDir = os.path.abspath(watchDir)
+        except Exception:
+            self.seedDir = self.watchDir = None
 
         path = "sync/maindata"
         maindata = self._request(path).json()
@@ -37,12 +40,21 @@ class qBittorrent:
         self.newTorrentMinPeer = 40
         self.removableSize = self.demandSize = 0
         self.upSpeed = self.dlSpeed = None
-        self._init_freeSpace(self.state["free_space_on_disk"])
+        self._init_freeSpace()
 
     def _request(self, path, **kwargs):
         response = requests.get(urljoin(self.api_baseurl, path), **kwargs)
         response.raise_for_status()
         return response
+
+    def _init_freeSpace(self):
+        try:
+            free_space_on_disk = shutil.disk_usage(self.seedDir).free
+        except Exception:
+            free_space_on_disk = self.state["free_space_on_disk"]
+        self.freeSpace = self.availSpace = (
+            free_space_on_disk - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
+        )
 
     def clean_seedDir(self):
         if not self.seedDir:
@@ -70,9 +82,14 @@ class qBittorrent:
                     refresh = True
                     log.append("Cleanup", None, entry.name)
         if refresh:
-            self._init_freeSpace(shutil.disk_usage(self.seedDir).free)
+            self._init_freeSpace()
 
     def action_needed(self) -> bool:
+        print(
+            "qBittorrent average speed last hour, ul: {}/s, dl: {}/s. Free space: {}".format(
+                humansize(self.upSpeed), humansize(self.dlSpeed), humansize(self.freeSpace)
+            )
+        )
         if self.freeSpace < 0:
             return True
         if self.state["up_rate_limit"] <= self.upSpeedThresh or self.state["use_alt_speed_limits"]:
@@ -88,7 +105,7 @@ class qBittorrent:
         self.newTorrentMinPeer = max(*(trs[k[0]]["num_incomplete"] for k in self.removeCand), self.newTorrentMinPeer)
         self._update_availSpace()
 
-        print(f"Add remove candidates, total: {humansize(self.removableSize)}")
+        print(f"Remove candidates: {humansize(self.removableSize)}")
         for k, v in self.removeCand:
             print(f'Name: {trs[k]["name"]}, size: {humansize(v)}')
 
@@ -100,11 +117,6 @@ class qBittorrent:
             return True
         print(f"Error: {filename} has already been added.")
         return False
-
-    def _init_freeSpace(self, free_space_on_disk: int):
-        self.freeSpace = self.availSpace = (
-            free_space_on_disk - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
-        )
 
     def _update_availSpace(self):
         self.availSpace = self.freeSpace + self.removableSize - self.demandSize
@@ -142,7 +154,7 @@ class qBittorrent:
         minSum = sum(nums)
         if minSum > targetSize:
             minKeys = 2 ** len(nums) - 1
-            masks = tuple(pow(2, i) for i in range(len(nums)))
+            masks = tuple(1 << i for i in range(len(nums)))
             _innerLoop()
             minKeys = tuple(i for n, i in enumerate(pairs) if minKeys & masks[n])
             return minKeys, minSum
@@ -172,8 +184,8 @@ class qBittorrent:
                 log.append("Error", None, f"Writing torrent to {self.watchDir} failed: {e}")
 
     def resume_paused(self):
-        errors = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
-        if any(i["state"] in errors for i in self.torrents.values()):
+        paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
+        if any(i["state"] in paused for i in self.torrents.values()):
             print("Resume torrents.")
             if not debug:
                 path = "torrents/resume"
@@ -225,7 +237,7 @@ class Data:
         except Exception:
             self.qBittorrentFrame = qBittorrentRow
         try:
-            difference = self.torrentFrame.columns.difference(qb.torrents)
+            difference = self.torrentFrame.columns.difference(torrentRow.columns)
             if not difference.empty:
                 self.torrentFrame.drop(columns=difference, inplace=True, errors="ignore")
                 self.torrentFrame.dropna(how="all", inplace=True)
@@ -237,24 +249,16 @@ class Data:
         speeds = self.qBittorrentFrame.last("H").resample("S").bfill().diff().mean()
         qb.upSpeed = speeds["upload"]
         qb.dlSpeed = speeds["download"]
-        print(
-            "qBittorrent average speed in last hour, ul: {}/s, dl: {}/s.".format(
-                humansize(speeds["upload"]), humansize(speeds["download"])
-            )
-        )
 
     def get_slows(self) -> pd.Index:
         """Trying to discover slow torrents using jenks natural breaks method."""
         speeds = self.torrentFrame
         speeds = speeds.last("D").resample("S").bfill().diff().mean()
-
         breaks = speeds.count() - 1
         if breaks >= 2:
             breaks = jenks_breaks(speeds, nb_class=(4 if breaks > 4 else breaks))[1]
         else:
             breaks = speeds.mean()
-
-        print(f"Threshold for slow torrents: {humansize(breaks)}/s")
         return speeds.loc[speeds <= breaks].index
 
     def dump(self, datafile: str, backupDir=None):
@@ -361,7 +365,7 @@ def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
     payload = {"username": mteamAccount[0], "password": mteamAccount[1]}
     re_download = re.compile(r"\bdownload.php\?")
     re_details = re.compile(r"\bdetails.php\?")
-    re_timelimit = re.compile(r"限時：")
+    re_timelimit = re.compile(r"限時：[^日]*$")
     re_date = re.compile(r"20[0-9]{2}(\W[0-9]{2}){2}\s+([0-9]{2}\W){2}[0-9]{2}")
     session = data.session
     mteamHistory = data.mteamHistory
@@ -392,28 +396,40 @@ def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
 
         print("Fetching feed success.")
 
+        cols = {}
+        for i, td in enumerate(soup.select("#form_torrent table.torrents > tr:nth-of-type(1) > td")):
+            title = td.find(title=True)
+            if title:
+                title = title["title"]
+            else:
+                title = td.get_text(strip=True)
+            cols[title] = i
+        colTitle = cols.get("標題", 1)
+        colDate = cols.get("存活時間", 3)
+        colSize = cols.get("大小", 4)
+        colUp = cols.get("種子數", 5)
+        colDown = cols.get("下載數", 6)
+
         for tr in soup.select("#form_torrent table.torrents > tr:not(:nth-of-type(1))"):
             try:
                 td = tr.find_all("td", recursive=False)
-                downloader = to_int(td[6].get_text())
+                downloader = to_int(td[colDown].get_text())
                 if downloader <= newTorrentMinPeer:
                     continue
-                link = td[1].find("a", href=re_download)["href"]
+                link = td[colTitle].find("a", href=re_download)["href"]
                 tid = re.search(r"id=([0-9]+)", link).group(1)
-                if tid in mteamHistory:
-                    continue
-                timelimit = td[1].find(string=re_timelimit)
-                if timelimit and "日" not in timelimit:
-                    continue
-                uploader = to_int(td[5].get_text())
-                if uploader == 0:
+                if (
+                    tid in mteamHistory
+                    or td[colTitle].find(string=re_timelimit)
+                    or td[colUp].get_text(strip=True) == "0"
+                ):
                     continue
 
-                title = td[1].find("a", href=re_details, string=True)
+                title = td[colTitle].find("a", href=re_details, string=True)
                 title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
-                date = td[3].find(title=re_date)["title"]
+                date = td[colDate].find(title=re_date)["title"]
                 date = pd.Timestamp(date).timestamp()
-                size = size_convert(td[4].get_text())
+                size = size_convert(td[colSize].get_text())
 
                 results.append((downloader, date, size, tid, title, link))
             except Exception as e:
