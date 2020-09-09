@@ -450,13 +450,8 @@ class MTeam:
         return a tuple of the optimal total size, total peers, torrent list.
         """
 
-        solver = pywrapknapsack_solver.KnapsackSolver(
-            pywrapknapsack_solver.KnapsackSolver.KNAPSACK_MULTIDIMENSION_BRANCH_AND_BOUND_SOLVER, "Knapsack"
-        )
-
         weights = tuple(i[0] for i in torrents)
         values = tuple(i[1] for i in torrents)
-
         if maxItem is None:
             weights = [weights]
             capacities = (capacity,)
@@ -464,6 +459,9 @@ class MTeam:
             weights = [weights, (1,) * len(torrents)]
             capacities = (capacity, maxItem)
 
+        solver = pywrapknapsack_solver.KnapsackSolver(
+            pywrapknapsack_solver.KnapsackSolver.KNAPSACK_MULTIDIMENSION_BRANCH_AND_BOUND_SOLVER, "Knapsack"
+        )
         solver.Init(values, weights, capacities)
         optValue = solver.Solve()
 
