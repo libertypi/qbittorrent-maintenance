@@ -8,6 +8,7 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from jenkspy import jenks_breaks
+from ortools.algorithms import pywrapknapsack_solver
 from pandas.util import hash_pandas_object
 from requests.compat import urljoin
 
@@ -37,7 +38,7 @@ class qBittorrent:
 
         self.removeList = self.removeCand = None
         self.newTorrent = {}
-        self.newTorrentMinPeer = 40
+        self.newTorrentMinPeer = 30
         self.removableSize = self.demandSize = 0
         self.upSpeed = self.dlSpeed = None
         self._init_freeSpace()
@@ -314,6 +315,174 @@ class Log:
             copy_backup(logfile, backupDir)
 
 
+class MTeam:
+    """An optimized MTeam downloader."""
+
+    domain = "https://pt.m-team.cc"
+
+    def __init__(self, mteamFeeds: tuple, mteamAccount: tuple, qb: qBittorrent, data: Data) -> None:
+        self.mteamFeeds = mteamFeeds
+        self.loginPayload = {"username": mteamAccount[0], "password": mteamAccount[1]}
+        self.qb = qb
+        self.data = data
+
+        self.loginPage = urljoin(self.domain, "takelogin.php")
+        self.loginReferer = {"referer": urljoin(self.domain, "login.php")}
+        self.re_download = re.compile(r"\bdownload.php\?")
+        self.re_details = re.compile(r"\bdetails.php\?")
+        self.re_timelimit = re.compile(r"限時：[^日]*$")
+
+    def run(self, maxItem=None):
+        print(
+            "Connecting to M-Team...",
+            "Max avail space: {}, minimum peer: {}, maximum items: {}.".format(
+                humansize(self.qb.availSpace), self.qb.newTorrentMinPeer, maxItem
+            ),
+        )
+
+        try:
+            soups = self._fetch()
+            torrents = tuple(self._parse(soups))
+        except Exception as e:
+            print(e)
+            return
+
+        optWeight, optValue, optTorrents = self.knapsack(torrents, self.qb.availSpace, maxItem)
+        print(
+            f"{len(optTorrents)} of {len(torrents)} torrents selected.",
+            f"Size: {humansize(optWeight)}, peer: {optValue}.",
+        )
+
+        try:
+            self._download(optTorrents)
+        except Exception as e:
+            print(f"Downloading torrents failed. {e}")
+
+    def _fetch(self):
+        session = self.data.session
+
+        for i, feed in enumerate(self.mteamFeeds, 1):
+            feed = urljoin(self.domain, feed)
+
+            for retry in range(5):
+                try:
+                    response = session.get(feed)
+                    response.raise_for_status()
+                    soup = BeautifulSoup(response.content, "html.parser")
+                    if "login.php" in response.url or "登錄" in soup.title.string:
+                        assert retry < 4, "login failed."
+                        print("Login...")
+                        session.post(self.loginPage, data=self.loginPayload, headers=self.loginReferer)
+                    else:
+                        print(f"Fetching feed {i} success.")
+                        yield soup
+                        break
+                except Exception as e:
+                    if retry == 4:
+                        raise e
+                    print(f"Retrying... Attempt: {i+1}, Error: {e}")
+                    session = self.data.init_session()
+
+    def _parse(self, soups):
+        mteamHistory = self.data.mteamHistory
+        newTorrentMinPeer = self.qb.newTorrentMinPeer
+        cols = {}
+
+        for soup in soups:
+            for i, td in enumerate(soup.select("#form_torrent table.torrents > tr:nth-of-type(1) > td")):
+                title = td.find(title=True)
+                title = title["title"] if title else td.get_text(strip=True)
+                cols[title] = i
+
+            colTitle = cols.get("標題", 1)
+            colSize = cols.get("大小", 4)
+            colUp = cols.get("種子數", 5)
+            colDown = cols.get("下載數", 6)
+            cols.clear()
+
+            for tr in soup.select("#form_torrent table.torrents > tr:not(:nth-of-type(1))"):
+                try:
+                    td = tr.find_all("td", recursive=False)
+
+                    peer = self.to_int(td[colDown].get_text())
+                    if peer <= newTorrentMinPeer:
+                        continue
+                    link = td[colTitle].find("a", href=self.re_download)["href"]
+                    tid = re.search(r"id=([0-9]+)", link).group(1)
+                    if (
+                        tid in mteamHistory
+                        or td[colTitle].find(string=self.re_timelimit)
+                        or td[colUp].get_text(strip=True) == "0"
+                    ):
+                        continue
+
+                    title = td[colTitle].find("a", href=self.re_details, string=True)
+                    title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
+                    size = self.size_convert(td[colSize].get_text())
+
+                    yield (size, peer, tid, title, link)
+                except Exception as e:
+                    print("Parsing page error:", e)
+
+    def _download(self, torrents):
+        session = self.data.session
+        mteamHistory = self.data.mteamHistory
+        qb = self.qb
+
+        for size, peer, tid, title, link in torrents:
+            response = session.get(urljoin(self.domain, link))
+            response.raise_for_status()
+
+            filename = f"{tid}.torrent"
+            if qb.add_torrent(filename, response.content, size):
+                log.append("Download", size, title)
+                if not debug:
+                    mteamHistory.add(tid)
+                print(f"New torrent: {title}. (Size: {humansize(size)}, peer: {peer})")
+
+    @staticmethod
+    def knapsack(torrents: tuple, capacity: int, maxItem=None):
+        """
+        Using OR-Tools from Google to solve the 0-1 knapsack problem.
+        To find a subset of items(torrents) whose counts is under maxItem and
+        fits inside capacity and maximizes the total value (peer counts).
+        Input should be a list of tuples: [(size, peer, ...), ...]
+        return a tuple of the optimal total size, total peers, torrent list.
+        """
+
+        solver = pywrapknapsack_solver.KnapsackSolver(
+            pywrapknapsack_solver.KnapsackSolver.KNAPSACK_MULTIDIMENSION_BRANCH_AND_BOUND_SOLVER, "Knapsack"
+        )
+
+        weights = tuple(i[0] for i in torrents)
+        values = tuple(i[1] for i in torrents)
+
+        if maxItem is None:
+            weights = [weights]
+            capacities = (capacity,)
+        else:
+            weights = [weights, (1,) * len(torrents)]
+            capacities = (capacity, maxItem)
+
+        solver.Init(values, weights, capacities)
+        optValue = solver.Solve()
+
+        optTorrents = tuple(i for n, i in enumerate(torrents) if solver.BestSolutionContains(n))
+        optWeight = sum(i[0] for i in optTorrents)
+
+        return optWeight, optValue, optTorrents
+
+    # These two functions should be wrapped inside a try...except block
+    @staticmethod
+    def to_int(string):
+        return int(re.sub(r"[^0-9]+", "", string))
+
+    @staticmethod
+    def size_convert(string):
+        m = re.search(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[TGMK]i?B)", string)
+        return int(float(m["num"]) * sizes[m["unit"]])
+
+
 def load_data(datafile: str):
     """Load Data object from pickle."""
     try:
@@ -349,116 +518,6 @@ def humansize(size, suffixes=("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "
     return "---"
 
 
-def mteam_download(mteamFeeds: tuple, mteamAccount: tuple, maxDownloads: int):
-
-    # These two functions should be wrapped inside a try...except block
-    def to_int(string):
-        return int(re.sub(r"[^0-9]+", "", string))
-
-    def size_convert(string):
-        m = re.search(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[TGMK]i?B)", string)
-        return int(float(m["num"]) * sizes[m["unit"]])
-
-    domain = "https://pt.m-team.cc"
-    login_page = urljoin(domain, "takelogin.php")
-    login_referer = {"referer": urljoin(domain, "login.php")}
-    payload = {"username": mteamAccount[0], "password": mteamAccount[1]}
-    re_download = re.compile(r"\bdownload.php\?")
-    re_details = re.compile(r"\bdetails.php\?")
-    re_timelimit = re.compile(r"限時：[^日]*$")
-    re_date = re.compile(r"20[0-9]{2}(\W[0-9]{2}){2}\s+([0-9]{2}\W){2}[0-9]{2}")
-    session = data.session
-    mteamHistory = data.mteamHistory
-    newTorrentMinPeer = qb.newTorrentMinPeer
-    results = []
-
-    print(f"Connecting to M-Team... Max avail space: {humansize(qb.availSpace)}, minimum peers: {newTorrentMinPeer}")
-    for feed in mteamFeeds:
-        feed = urljoin(domain, feed)
-
-        for i in range(5):
-            try:
-                response = session.get(feed)
-                response.raise_for_status()
-                soup = BeautifulSoup(response.content, "html.parser")
-                if "login.php" in response.url or "登錄" in soup.title.string:
-                    assert i < 4, "login failed."
-                    print("Login...")
-                    session.post(login_page, data=payload, headers=login_referer)
-                else:
-                    break
-            except Exception as e:
-                if i == 4:
-                    print(e)
-                    return
-                print(f"Retrying... Attempt: {i+1}, Error: {e}")
-                session = data.init_session()
-
-        print("Fetching feed success.")
-
-        cols = {}
-        for i, td in enumerate(soup.select("#form_torrent table.torrents > tr:nth-of-type(1) > td")):
-            title = td.find(title=True)
-            if title:
-                title = title["title"]
-            else:
-                title = td.get_text(strip=True)
-            cols[title] = i
-        colTitle = cols.get("標題", 1)
-        colDate = cols.get("存活時間", 3)
-        colSize = cols.get("大小", 4)
-        colUp = cols.get("種子數", 5)
-        colDown = cols.get("下載數", 6)
-
-        for tr in soup.select("#form_torrent table.torrents > tr:not(:nth-of-type(1))"):
-            try:
-                td = tr.find_all("td", recursive=False)
-                downloader = to_int(td[colDown].get_text())
-                if downloader <= newTorrentMinPeer:
-                    continue
-                link = td[colTitle].find("a", href=re_download)["href"]
-                tid = re.search(r"id=([0-9]+)", link).group(1)
-                if (
-                    tid in mteamHistory
-                    or td[colTitle].find(string=re_timelimit)
-                    or td[colUp].get_text(strip=True) == "0"
-                ):
-                    continue
-
-                title = td[colTitle].find("a", href=re_details, string=True)
-                title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
-                date = td[colDate].find(title=re_date)["title"]
-                date = pd.Timestamp(date).timestamp()
-                size = size_convert(td[colSize].get_text())
-
-                results.append((downloader, date, size, tid, title, link))
-            except Exception as e:
-                print("Parsing page error:", e)
-
-    results.sort(reverse=True)
-    print(f"Done. {len(results)} torrents collected.")
-    for downloader, date, size, tid, title, link in results:
-        if size > qb.availSpace:
-            continue
-
-        try:
-            response = session.get(urljoin(domain, link))
-            response.raise_for_status()
-        except Exception as e:
-            print(f"Downloading {title} torrent failed. {e}")
-            return
-
-        filename = f"{tid}.torrent"
-        if qb.add_torrent(filename, response.content, size):
-            log.append("Download", size, title)
-            if not debug:
-                mteamHistory.add(tid)
-            print(f"New torrent: {title}, size: {humansize(size)}, max avail: {humansize(qb.availSpace)}")
-
-        if len(qb.newTorrent) >= maxDownloads:
-            return
-
-
 if __name__ == "__main__":
     import qbconfig
 
@@ -485,7 +544,7 @@ if __name__ == "__main__":
     if qb.action_needed() or debug:
         qb.build_remove_lists(data)
         if qb.availSpace > 0:
-            mteam_download(config.mteamFeeds, config.mteamAccount, maxDownloads=2)
+            MTeam(config.mteamFeeds, config.mteamAccount, qb=qb, data=data).run(maxItem=3)
         qb.promote_candidates()
         qb.apply_removes()
         qb.upload_torrent()
