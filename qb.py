@@ -404,7 +404,7 @@ class MTeam:
                 try:
                     td = tr.find_all("td", recursive=False)
 
-                    peer = self.to_int(td[colDown].get_text())
+                    peer = int(re.sub(r"[^0-9]+", "", td[colDown].get_text()))
                     if peer <= newTorrentMinPeer:
                         continue
                     link = td[colTitle].find("a", href=self.re_download)["href"]
@@ -470,13 +470,9 @@ class MTeam:
 
         return optWeight, optValue, optTorrents
 
-    # These two functions should be wrapped inside a try...except block
-    @staticmethod
-    def to_int(string):
-        return int(re.sub(r"[^0-9]+", "", string))
-
     @staticmethod
     def size_convert(string):
+        """Should be wrapped inside a try...except block"""
         m = re.search(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[TGMK]i?B)", string)
         return int(float(m["num"]) * sizes[m["unit"]])
 
