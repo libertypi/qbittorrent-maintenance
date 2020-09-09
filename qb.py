@@ -320,23 +320,17 @@ class MTeam:
 
     domain = "https://pt.m-team.cc"
 
-    def __init__(self, mteamFeeds: tuple, mteamAccount: tuple, qb: qBittorrent, data: Data) -> None:
+    def __init__(self, mteamFeeds: tuple, mteamAccount: tuple) -> None:
         self.mteamFeeds = mteamFeeds
         self.loginPayload = {"username": mteamAccount[0], "password": mteamAccount[1]}
-        self.qb = qb
-        self.data = data
-
         self.loginPage = urljoin(self.domain, "takelogin.php")
         self.loginReferer = {"referer": urljoin(self.domain, "login.php")}
-        self.re_download = re.compile(r"\bdownload.php\?")
-        self.re_details = re.compile(r"\bdetails.php\?")
-        self.re_timelimit = re.compile(r"限時：[^日]*$")
 
     def run(self, maxItem=None):
         print(
             "Connecting to M-Team...",
             "Max avail space: {}, minimum peer: {}, maximum items: {}.".format(
-                humansize(self.qb.availSpace), self.qb.newTorrentMinPeer, maxItem
+                humansize(qb.availSpace), qb.newTorrentMinPeer, maxItem
             ),
         )
 
@@ -347,7 +341,7 @@ class MTeam:
             print(e)
             return
 
-        optWeight, optValue, optTorrents = self.knapsack(torrents, self.qb.availSpace, maxItem)
+        optWeight, optValue, optTorrents = self.knapsack(torrents, qb.availSpace, maxItem)
         print(
             f"{len(optTorrents)} of {len(torrents)} torrents selected.",
             f"Size: {humansize(optWeight)}, peer: {optValue}.",
@@ -359,7 +353,7 @@ class MTeam:
             print(f"Downloading torrents failed. {e}")
 
     def _fetch(self):
-        session = self.data.session
+        session = data.session
 
         for i, feed in enumerate(self.mteamFeeds, 1):
             feed = urljoin(self.domain, feed)
@@ -381,11 +375,14 @@ class MTeam:
                     if retry == 4:
                         raise e
                     print(f"Retrying... Attempt: {i+1}, Error: {e}")
-                    session = self.data.init_session()
+                    session = data.init_session()
 
     def _parse(self, soups):
-        mteamHistory = self.data.mteamHistory
-        newTorrentMinPeer = self.qb.newTorrentMinPeer
+        mteamHistory = data.mteamHistory
+        newTorrentMinPeer = qb.newTorrentMinPeer
+        re_download = re.compile(r"\bdownload.php\?")
+        re_details = re.compile(r"\bdetails.php\?")
+        re_timelimit = re.compile(r"限時：[^日]*$")
         cols = {}
 
         for soup in soups:
@@ -407,16 +404,16 @@ class MTeam:
                     peer = int(re.sub(r"[^0-9]+", "", td[colDown].get_text()))
                     if peer <= newTorrentMinPeer:
                         continue
-                    link = td[colTitle].find("a", href=self.re_download)["href"]
+                    link = td[colTitle].find("a", href=re_download)["href"]
                     tid = re.search(r"id=([0-9]+)", link).group(1)
                     if (
                         tid in mteamHistory
-                        or td[colTitle].find(string=self.re_timelimit)
+                        or td[colTitle].find(string=re_timelimit)
                         or td[colUp].get_text(strip=True) == "0"
                     ):
                         continue
 
-                    title = td[colTitle].find("a", href=self.re_details, string=True)
+                    title = td[colTitle].find("a", href=re_details, string=True)
                     title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
                     size = self.size_convert(td[colSize].get_text())
 
@@ -425,9 +422,8 @@ class MTeam:
                     print("Parsing page error:", e)
 
     def _download(self, torrents):
-        session = self.data.session
-        mteamHistory = self.data.mteamHistory
-        qb = self.qb
+        session = data.session
+        mteamHistory = data.mteamHistory
 
         for size, peer, tid, title, link in torrents:
             response = session.get(urljoin(self.domain, link))
@@ -538,7 +534,7 @@ if __name__ == "__main__":
     if qb.action_needed() or debug:
         qb.build_remove_lists(data)
         if qb.availSpace > 0:
-            MTeam(config.mteamFeeds, config.mteamAccount, qb=qb, data=data).run(maxItem=3)
+            MTeam(config.mteamFeeds, config.mteamAccount).run(maxItem=3)
         qb.promote_candidates()
         qb.apply_removes()
         qb.upload_torrent()
