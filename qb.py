@@ -36,11 +36,11 @@ class qBittorrent:
         if self.state["connection_status"] not in ("connected", "firewalled"):
             raise RuntimeError("qBittorrent is not connected to the internet.")
 
-        self.removeList = self.removeCand = None
+        self.removeCand = None
         self.newTorrent = {}
         self.newTorrentMinPeer = 30
         self.removableSize = self.demandSize = 0
-        self.upSpeed = self.dlSpeed = None
+        self.upSpeed = self.dlSpeed = -1
         self._init_freeSpace()
 
     def _request(self, path, **kwargs):
@@ -56,6 +56,9 @@ class qBittorrent:
         self.freeSpace = self.availSpace = (
             free_space_on_disk - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
         )
+
+    def _update_availSpace(self):
+        self.availSpace = self.freeSpace + self.removableSize - self.demandSize
 
     def clean_seedDir(self):
         if not self.seedDir:
@@ -119,19 +122,48 @@ class qBittorrent:
         print(f"Error: {filename} has already been added.")
         return False
 
-    def _update_availSpace(self):
-        self.availSpace = self.freeSpace + self.removableSize - self.demandSize
-
-    def promote_candidates(self):
+    def apply_removes(self):
         targetSize = self.demandSize - self.freeSpace
-        if targetSize > 0:
-            print(
-                f"Demand space: {humansize(self.demandSize)},",
-                f"free space: {humansize(self.freeSpace)},",
-                f"space to free: {humansize(targetSize)}",
-            )
-            self.removeList, minSum = self.findMinSum(self.removeCand, targetSize)
-            print(f"Removals: {len(self.removeList)}, size: {humansize(minSum)}")
+        if targetSize <= 0:
+            return
+
+        print(
+            f"Demand space: {humansize(self.demandSize)},",
+            f"free space: {humansize(self.freeSpace)},",
+            f"space to free: {humansize(targetSize)}",
+        )
+        removeList, minSum = self.findMinSum(self.removeCand, targetSize)
+        print(f"Removals: {len(removeList)}, size: {humansize(minSum)}")
+
+        if not debug and removeList:
+            path = "torrents/delete"
+            payload = {"hashes": "|".join(i[0] for i in removeList), "deleteFiles": True}
+            self._request(path, params=payload)
+        for k, v in removeList:
+            log.append("Remove", v, self.torrents[k]["name"])
+
+    def upload_torrent(self):
+        if not self.newTorrent or debug:
+            return
+
+        try:
+            if not os.path.exists(self.watchDir):
+                os.mkdir(self.watchDir)
+            for filename, content in self.newTorrent.items():
+                path = os.path.join(self.watchDir, filename)
+                with open(path, "wb") as f:
+                    f.write(content)
+        except Exception as e:
+            log.append("Error", None, f"Writing torrent to {self.watchDir} failed: {e}")
+
+    def resume_paused(self):
+        paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
+        if any(i["state"] in paused for i in self.torrents.values()):
+            print("Resume torrents.")
+            if not debug:
+                path = "torrents/resume"
+                payload = {"hashes": "all"}
+                self._request(path, params=payload)
 
     @staticmethod
     def findMinSum(pairs: tuple, targetSize: int):
@@ -142,7 +174,7 @@ class qBittorrent:
 
         def _innerLoop(parentKeys=0, parentSum=0, i=0):
             nonlocal minKeys, minSum
-            for n in range(i, len(nums)):
+            for n in range(i, length):
                 currentSum = parentSum + nums[n]
                 if currentSum < minSum:
                     currentKeys = parentKeys | masks[n]
@@ -154,44 +186,13 @@ class qBittorrent:
         nums = tuple(i[1] for i in pairs)
         minSum = sum(nums)
         if minSum > targetSize:
-            minKeys = 2 ** len(nums) - 1
-            masks = tuple(1 << i for i in range(len(nums)))
+            length = len(nums)
+            minKeys = 2 ** length - 1
+            masks = tuple(1 << i for i in range(length))
             _innerLoop()
             minKeys = tuple(i for n, i in enumerate(pairs) if minKeys & masks[n])
             return minKeys, minSum
         return pairs, minSum
-
-    def apply_removes(self):
-        if self.removeList:
-            if not debug:
-                path = "torrents/delete"
-                payload = {"hashes": "|".join(i[0] for i in self.removeList), "deleteFiles": True}
-                self._request(path, params=payload)
-            for k, v in self.removeList:
-                log.append("Remove", v, self.torrents[k]["name"])
-
-    def upload_torrent(self):
-        if self.newTorrent:
-            if debug:
-                return
-            try:
-                if not os.path.exists(self.watchDir):
-                    os.mkdir(self.watchDir)
-                for filename, content in self.newTorrent.items():
-                    path = os.path.join(self.watchDir, filename)
-                    with open(path, "wb") as f:
-                        f.write(content)
-            except Exception as e:
-                log.append("Error", None, f"Writing torrent to {self.watchDir} failed: {e}")
-
-    def resume_paused(self):
-        paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
-        if any(i["state"] in paused for i in self.torrents.values()):
-            print("Resume torrents.")
-            if not debug:
-                path = "torrents/resume"
-                payload = {"hashes": "all"}
-                self._request(path, params=payload)
 
 
 class Data:
@@ -327,6 +328,15 @@ class MTeam:
         self.loginReferer = {"referer": urljoin(self.domain, "login.php")}
 
     def run(self, maxItem=None):
+        session = data.session
+        mteamHistory = data.mteamHistory
+        newTorrentMinPeer = qb.newTorrentMinPeer
+        re_download = re.compile(r"\bdownload.php\?")
+        re_details = re.compile(r"\bdetails.php\?")
+        re_timelimit = re.compile(r"限時：[^日]*$")
+        torrents = []
+        cols = {}
+
         print(
             "Connecting to M-Team...",
             "Max avail space: {}, minimum peer: {}, maximum items: {}.".format(
@@ -334,28 +344,7 @@ class MTeam:
             ),
         )
 
-        try:
-            soups = self._fetch()
-            torrents = tuple(self._parse(soups))
-        except Exception as e:
-            print(e)
-            return
-
-        optWeight, optValue, optTorrents = self.knapsack(torrents, qb.availSpace, maxItem)
-        print(
-            f"{len(optTorrents)} of {len(torrents)} torrents selected.",
-            f"Size: {humansize(optWeight)}, peer: {optValue}.",
-        )
-
-        try:
-            self._download(optTorrents)
-        except Exception as e:
-            print(f"Downloading torrents failed. {e}")
-
-    def _fetch(self):
-        session = data.session
-
-        for i, feed in enumerate(self.mteamFeeds, 1):
+        for c, feed in enumerate(self.mteamFeeds, 1):
             feed = urljoin(self.domain, feed)
 
             for retry in range(5):
@@ -368,24 +357,16 @@ class MTeam:
                         print("Login...")
                         session.post(self.loginPage, data=self.loginPayload, headers=self.loginReferer)
                     else:
-                        print(f"Fetching feed {i} success.")
-                        yield soup
                         break
                 except Exception as e:
                     if retry == 4:
-                        raise e
-                    print(f"Retrying... Attempt: {i+1}, Error: {e}")
+                        print(e)
+                        return
+                    print(f"Retrying... Attempt: {retry+1}, Error: {e}")
                     session = data.init_session()
 
-    def _parse(self, soups):
-        mteamHistory = data.mteamHistory
-        newTorrentMinPeer = qb.newTorrentMinPeer
-        re_download = re.compile(r"\bdownload.php\?")
-        re_details = re.compile(r"\bdetails.php\?")
-        re_timelimit = re.compile(r"限時：[^日]*$")
-        cols = {}
+            print(f"Fetching feed {c} success.")
 
-        for soup in soups:
             for i, td in enumerate(soup.select("#form_torrent table.torrents > tr:nth-of-type(1) > td")):
                 title = td.find(title=True)
                 title = title["title"] if title else td.get_text(strip=True)
@@ -417,17 +398,29 @@ class MTeam:
                     title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
                     size = self.size_convert(td[colSize].get_text())
 
-                    yield (size, peer, tid, title, link)
+                    torrents.append((size, peer, tid, title, link))
+
                 except Exception as e:
                     print("Parsing page error:", e)
 
-    def _download(self, torrents):
-        session = data.session
-        mteamHistory = data.mteamHistory
+        if not torrents:
+            print("No new torrent found.")
+            return
 
-        for size, peer, tid, title, link in torrents:
-            response = session.get(urljoin(self.domain, link))
-            response.raise_for_status()
+        optWeight, optValue, optTorrents = self.knapsack(torrents, qb.availSpace, maxItem)
+
+        print(
+            f"{len(optTorrents)} of {len(torrents)} torrents selected.",
+            f"Size: {humansize(optWeight)}, peer: {optValue}.",
+        )
+
+        for size, peer, tid, title, link in optTorrents:
+            try:
+                response = session.get(urljoin(self.domain, link))
+                response.raise_for_status()
+            except Exception as e:
+                print(f"Downloading torrents failed. {e}")
+                return
 
             filename = f"{tid}.torrent"
             if qb.add_torrent(filename, response.content, size):
@@ -437,7 +430,7 @@ class MTeam:
                 print(f"New torrent: {title}. (Size: {humansize(size)}, peer: {peer})")
 
     @staticmethod
-    def knapsack(torrents: tuple, capacity: int, maxItem=None):
+    def knapsack(torrents: list, capacity: int, maxItem=None):
         """
         Using OR-Tools from Google to solve the 0-1 knapsack problem.
         To find a subset of items(torrents) whose counts is under maxItem and
@@ -535,7 +528,6 @@ if __name__ == "__main__":
         qb.build_remove_lists(data)
         if qb.availSpace > 0:
             MTeam(config.mteamFeeds, config.mteamAccount).run(maxItem=3)
-        qb.promote_candidates()
         qb.apply_removes()
         qb.upload_torrent()
     else:
