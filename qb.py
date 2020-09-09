@@ -12,13 +12,13 @@ from ortools.algorithms import pywrapknapsack_solver
 from pandas.util import hash_pandas_object
 from requests.compat import urljoin
 
-sizes = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGT"), (1024 ** s for s in range(1, 5))) for u in us}
+byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGT"), (1024 ** s for s in range(1, 5))) for u in us}
 
 
 class qBittorrent:
-    spaceQuota = 50 * sizes["GiB"]
-    upSpeedThresh = 2.6 * sizes["MiB"]
-    dlSpeedThresh = 8 * sizes["MiB"]
+    spaceQuota = 50 * byteUnit["GiB"]
+    upSpeedThresh = 2.6 * byteUnit["MiB"]
+    dlSpeedThresh = 8 * byteUnit["MiB"]
 
     def __init__(self, qBittorrentHost: str, seedDir: str, watchDir: str):
 
@@ -463,7 +463,7 @@ class MTeam:
     def size_convert(string):
         """Should be wrapped inside a try...except block"""
         m = re.search(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[TGMK]i?B)", string)
-        return int(float(m["num"]) * sizes[m["unit"]])
+        return int(float(m["num"]) * byteUnit[m["unit"]])
 
 
 def load_data(datafile: str):
