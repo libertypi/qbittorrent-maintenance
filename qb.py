@@ -3,14 +3,13 @@ import pickle
 import re
 import shutil
 from sys import argv
+from urllib.parse import urljoin
 
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from jenkspy import jenks_breaks
 from ortools.algorithms import pywrapknapsack_solver
-from pandas.util import hash_pandas_object
-from requests.compat import urljoin
 
 byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGT"), (1024 ** s for s in range(1, 5))) for u in us}
 
@@ -84,7 +83,7 @@ class qBittorrent:
                             print("Deletion Failed:", e)
                             continue
                     refresh = True
-                    log.append("Cleanup", None, entry.name)
+                    log.record("Cleanup", None, entry.name)
         if refresh:
             self._init_freeSpace()
 
@@ -140,7 +139,7 @@ class qBittorrent:
             payload = {"hashes": "|".join(i[0] for i in removeList), "deleteFiles": True}
             self._request(path, params=payload)
         for k, v in removeList:
-            log.append("Remove", v, self.torrents[k]["name"])
+            log.record("Remove", v, self.torrents[k]["name"])
 
     def upload_torrent(self):
         if not self.newTorrent or debug:
@@ -154,7 +153,7 @@ class qBittorrent:
                 with open(path, "wb") as f:
                     f.write(content)
         except Exception as e:
-            log.append("Error", None, f"Writing torrent to {self.watchDir} failed: {e}")
+            log.record("Error", None, f"Writing torrent to {self.watchDir} failed: {e}")
 
     def resume_paused(self):
         paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
@@ -199,22 +198,8 @@ class Data:
     def __init__(self):
         self.qBittorrentFrame = pd.DataFrame()
         self.torrentFrame = pd.DataFrame()
-        self.frameHash = None
         self.mteamHistory = set()
         self.init_session()
-
-    def integrity_test(self):
-        attrs = (
-            "qBittorrentFrame",
-            "torrentFrame",
-            "frameHash",
-            "mteamHistory",
-            "session",
-        )
-        return all(hasattr(self, attr) for attr in attrs) and self._hash_dataframe() == self.frameHash
-
-    def _hash_dataframe(self):
-        return (hash_pandas_object(self.qBittorrentFrame).sum(), hash_pandas_object(self.torrentFrame).sum())
 
     def init_session(self) -> requests.session:
         """Initialize a new requests session."""
@@ -225,6 +210,16 @@ class Data:
             }
         )
         return self.session
+
+    def integrity_test(self):
+        attrs = (
+            (self.qBittorrentFrame, pd.DataFrame),
+            (self.torrentFrame, pd.DataFrame),
+            (self.mteamHistory, set),
+            (self.session, requests.Session),
+        )
+        if not all(isinstance(x, y) for x, y in attrs):
+            raise Exception("Intergrity check failed.")
 
     def record(self, qb: qBittorrent):
         """Record qBittorrent traffic data to pandas DataFrame."""
@@ -246,7 +241,6 @@ class Data:
             self.torrentFrame = self.torrentFrame.append(torrentRow)
         except Exception:
             self.torrentFrame = torrentRow
-        self.frameHash = self._hash_dataframe()
 
         speeds = self.qBittorrentFrame.last("H").resample("S").bfill().diff().mean()
         qb.upSpeed = speeds["upload"]
@@ -254,8 +248,7 @@ class Data:
 
     def get_slows(self) -> pd.Index:
         """Trying to discover slow torrents using jenks natural breaks method."""
-        speeds = self.torrentFrame
-        speeds = speeds.last("D").resample("S").bfill().diff().mean()
+        speeds = self.torrentFrame.last("D").resample("S").bfill().diff().mean()
         breaks = speeds.count() - 1
         if breaks >= 2:
             breaks = jenks_breaks(speeds, nb_class=(4 if breaks > 4 else breaks))[1]
@@ -270,18 +263,15 @@ class Data:
             with open(datafile, "wb") as f:
                 pickle.dump(self, f)
         except Exception as e:
-            log.append("Error", None, f"Writing data to disk failed: {e}")
+            log.record("Error", None, f"Writing data to disk failed: {e}")
             return
         if backupDir:
             copy_backup(datafile, backupDir)
 
 
-class Log:
-    def __init__(self):
-        self.log = []
-
-    def append(self, action, size, name):
-        self.log.append(
+class Log(list):
+    def record(self, action, size, name):
+        self.append(
             "{:20}{:12}{:14}{}\n".format(
                 pd.Timestamp.now().strftime("%D %T"),
                 action,
@@ -291,12 +281,14 @@ class Log:
         )
 
     def write(self, logfile: str, backupDir=None):
-        if not self.log:
+        if not self:
             return
+
+        self.reverse()
 
         if debug:
             print("Logs:")
-            for log in reversed(self.log):
+            for log in self:
                 print(log, end="")
             return
 
@@ -308,7 +300,7 @@ class Log:
 
         with open(logfile, mode="w", encoding="utf-8") as f:
             f.write("{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", "-" * 80))
-            f.writelines(reversed(self.log))
+            f.writelines(self)
             if oldLog:
                 f.writelines(oldLog)
 
@@ -344,7 +336,7 @@ class MTeam:
             ),
         )
 
-        for c, feed in enumerate(self.mteamFeeds, 1):
+        for feed in self.mteamFeeds:
             feed = urljoin(self.domain, feed)
 
             for retry in range(5):
@@ -365,7 +357,7 @@ class MTeam:
                     print(f"Retrying... Attempt: {retry+1}, Error: {e}")
                     session = data.init_session()
 
-            print(f"Fetching feed {c} success.")
+            print("Fetching feed success.")
 
             for i, td in enumerate(soup.select("#form_torrent table.torrents > tr:nth-of-type(1) > td")):
                 title = td.find(title=True)
@@ -424,7 +416,7 @@ class MTeam:
 
             filename = f"{tid}.torrent"
             if qb.add_torrent(filename, response.content, size):
-                log.append("Download", size, title)
+                log.record("Download", size, title)
                 if not debug:
                     mteamHistory.add(tid)
                 print(f"New torrent: {title}. (Size: {humansize(size)}, peer: {peer})")
@@ -471,7 +463,7 @@ def load_data(datafile: str):
     try:
         with open(datafile, mode="rb") as f:
             data = pickle.load(f)
-        assert data.integrity_test(), "Intergrity check failed."
+        data.integrity_test()
     except Exception as e:
         print(f"Loading data from {datafile} failed: {e}")
         if not debug:
