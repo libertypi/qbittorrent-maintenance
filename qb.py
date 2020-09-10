@@ -102,15 +102,16 @@ class qBittorrent:
     def build_remove_lists(self, data):
         trs = self.torrents
         oneDayAgo = pd.Timestamp.now().timestamp() - 86400
+        removes = ((k, trs[k]) for k in data.get_slows())
 
-        self.removeCand = tuple((k, trs[k]["size"]) for k in data.get_slows() if trs[k]["added_on"] < oneDayAgo)
-        self.removableSize = sum(i[1] for i in self.removeCand)
-        self.newTorrentMinPeer = max(*(trs[k[0]]["num_incomplete"] for k in self.removeCand), self.newTorrentMinPeer)
+        self.removeCand = tuple((k, v["size"], v["name"]) for k, v in removes if v["added_on"] < oneDayAgo)
+        self.removableSize = sum(v[1] for v in self.removeCand)
+        self.newTorrentMinPeer = max(self.newTorrentMinPeer, *(trs[v[0]]["num_incomplete"] for v in self.removeCand))
         self._update_availSpace()
 
         print(f"Remove candidates: {humansize(self.removableSize)}")
-        for k, v in self.removeCand:
-            print(f'Name: {trs[k]["name"]}, size: {humansize(v)}')
+        for v in self.removeCand:
+            print(f"Name: {v[2]}, size: {humansize(v[1])}")
 
     def add_torrent(self, filename: str, content: bytes, size: int):
         if filename not in self.newTorrent:
@@ -138,8 +139,8 @@ class qBittorrent:
             path = "torrents/delete"
             payload = {"hashes": "|".join(i[0] for i in removeList), "deleteFiles": True}
             self._request(path, params=payload)
-        for k, v in removeList:
-            log.record("Remove", v, self.torrents[k]["name"])
+        for v in removeList:
+            log.record("Remove", v[1], v[2])
 
     def upload_torrent(self):
         if not self.newTorrent or debug:
@@ -242,13 +243,13 @@ class Data:
         except Exception:
             self.torrentFrame = torrentRow
 
-        speeds = self.qBittorrentFrame.last("H").resample("S").bfill().diff().mean()
+        speeds = self.qBittorrentFrame.last("H").resample("T").bfill().diff().mean().floordiv(60)
         qb.upSpeed = speeds["upload"]
         qb.dlSpeed = speeds["download"]
 
     def get_slows(self) -> pd.Index:
         """Trying to discover slow torrents using jenks natural breaks method."""
-        speeds = self.torrentFrame.last("D").resample("S").bfill().diff().mean()
+        speeds = self.torrentFrame.last("D").resample("T").bfill().diff().mean()
         breaks = speeds.count() - 1
         if breaks >= 2:
             breaks = jenks_breaks(speeds, nb_class=(4 if breaks > 4 else breaks))[1]
@@ -285,11 +286,10 @@ class Log(list):
             return
 
         self.reverse()
+        header = "{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", "-" * 80)
 
         if debug:
-            print("Logs:")
-            for log in self:
-                print(log, end="")
+            print(header, *self, end="")
             return
 
         try:
@@ -299,7 +299,7 @@ class Log(list):
             oldLog = None
 
         with open(logfile, mode="w", encoding="utf-8") as f:
-            f.write("{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", "-" * 80))
+            f.write(header)
             f.writelines(self)
             if oldLog:
                 f.writelines(oldLog)
