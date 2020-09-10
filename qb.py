@@ -412,7 +412,7 @@ class MTeam:
                 response = session.get(urljoin(self.domain, link))
                 response.raise_for_status()
             except Exception as e:
-                print(f"Downloading torrents failed. {e}")
+                print("Downloading torrents failed.", e)
                 return
 
             filename = f"{tid}.torrent"
