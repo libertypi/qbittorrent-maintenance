@@ -63,14 +63,14 @@ class qBittorrent:
             return
 
         refresh = False
+        re_ext = re.compile(r"\.!qB$")
         names = set(i["name"] for i in self.torrents.values())
         if os.path.dirname(self.watchDir) == self.seedDir:
             names.add(os.path.basename(self.watchDir))
 
         with os.scandir(self.seedDir) as it:
             for entry in it:
-                name = os.path.splitext(entry.name)[0] if entry.name.endswith(".!qB") else entry.name
-                if name not in names:
+                if re_ext.sub("", entry.name) not in names:
                     print("Cleanup:", entry.name)
                     if not debug:
                         try:
@@ -86,17 +86,18 @@ class qBittorrent:
         if refresh:
             self._init_freeSpace()
 
-    def action_needed(self) -> bool:
+    def need_action(self) -> bool:
         print(
             "qBittorrent average speed last hour:\nUL: {}/s, DL: {}/s. Free space: {}".format(
                 humansize(self.upSpeed), humansize(self.dlSpeed), humansize(self.freeSpace)
             )
         )
-        if self.freeSpace < 0:
-            return True
-        if self.state["up_rate_limit"] <= self.upSpeedThresh or self.state["use_alt_speed_limits"]:
-            return False
-        return 0 <= self.upSpeed < self.upSpeedThresh and 0 <= self.dlSpeed < self.dlSpeedThresh
+        return (
+            0 <= self.upSpeed < self.upSpeedThresh
+            and 0 <= self.dlSpeed < self.dlSpeedThresh
+            and not self.state["use_alt_speed_limits"]
+            and self.state["up_rate_limit"] > self.upSpeedThresh
+        ) or self.freeSpace < 0
 
     def build_remove_lists(self, data):
         trs = self.torrents
@@ -333,6 +334,8 @@ class MTeam:
         re_download = re.compile(r"\bdownload.php\?")
         re_details = re.compile(r"\bdetails.php\?")
         re_timelimit = re.compile(r"限時：[^日]*$")
+        re_nondigit = re.compile(r"[^0-9]+")
+        re_tid = re.compile(r"id=([0-9]+)")
         torrents = []
         cols = {}
 
@@ -341,22 +344,22 @@ class MTeam:
         for feed in self.mteamFeeds:
             feed = urljoin(self.domain, feed)
 
-            for retry in range(5):
+            for i in range(5):
                 try:
                     response = session.get(feed)
                     response.raise_for_status()
                     soup = BeautifulSoup(response.content, "html.parser")
                     if "login.php" in response.url or "登錄" in soup.title.string:
-                        assert retry < 4, "login failed."
+                        assert i < 4, "login failed."
                         print("Login...")
                         session.post(self.loginPage, data=self.loginPayload, headers=self.loginReferer)
                     else:
                         break
                 except Exception as e:
-                    if retry == 4:
+                    if i == 4:
                         print(e)
                         return
-                    print(f"Retrying... Attempt: {retry+1}, Error: {e}")
+                    print(f"Retrying... Attempt: {i+1}, Error: {e}")
                     session = data.init_session()
 
             print("Fetching feed success.")
@@ -376,11 +379,11 @@ class MTeam:
                 try:
                     td = tr.find_all("td", recursive=False)
 
-                    peer = int(re.sub(r"[^0-9]+", "", td[colDown].get_text()))
+                    peer = int(re_nondigit.sub("", td[colDown].get_text()))
                     if peer <= newTorrentMinPeer:
                         continue
                     link = td[colTitle].find("a", href=re_download)["href"]
-                    tid = re.search(r"id=([0-9]+)", link).group(1)
+                    tid = re_tid.search(link).group(1)
                     if (
                         tid in mteamHistory
                         or td[colTitle].find(string=re_timelimit)
@@ -415,8 +418,7 @@ class MTeam:
                 print("Downloading torrents failed.", e)
                 return
 
-            filename = f"{tid}.torrent"
-            if qb.add_torrent(filename, response.content, size):
+            if qb.add_torrent(f"{tid}.torrent", response.content, size):
                 log.record("Download", size, title)
                 if not debug:
                     mteamHistory.add(tid)
@@ -517,7 +519,7 @@ if __name__ == "__main__":
     data.record(qb)
     qb.clean_seedDir()
 
-    if qb.action_needed() or debug:
+    if qb.need_action() or debug:
         qb.build_remove_lists(data)
         if qb.availSpace > 0:
             MTeam(config.mteamFeeds, config.mteamAccount).run(maxItem=3)
