@@ -20,7 +20,6 @@ class qBittorrent:
     dlSpeedThresh = 8 * byteUnit["MiB"]
 
     def __init__(self, qBittorrentHost: str, seedDir: str, watchDir: str):
-
         self.api_baseurl = urljoin(qBittorrentHost, "api/v2/")
         try:
             self.seedDir = os.path.abspath(seedDir)
@@ -82,14 +81,14 @@ class qBittorrent:
                         except Exception as e:
                             print("Deletion Failed:", e)
                             continue
-                    refresh = True
+                        refresh = True
                     log.record("Cleanup", None, entry.name)
         if refresh:
             self._init_freeSpace()
 
     def action_needed(self) -> bool:
         print(
-            "qBittorrent average speed last hour, ul: {}/s, dl: {}/s. Free space: {}".format(
+            "qBittorrent average speed last hour:\nUL: {}/s, DL: {}/s. Free space: {}".format(
                 humansize(self.upSpeed), humansize(self.dlSpeed), humansize(self.freeSpace)
             )
         )
@@ -109,9 +108,17 @@ class qBittorrent:
         self.newTorrentMinPeer = max(self.newTorrentMinPeer, *(trs[v[0]]["num_incomplete"] for v in self.removeCand))
         self._update_availSpace()
 
-        print(f"Remove candidates: {humansize(self.removableSize)}")
+        print(
+            "Remove candidates info:\nCount: {}/{}. Minimum peer: {}. Size: {}. Max avail space: {}.".format(
+                len(self.removeCand),
+                len(trs),
+                self.newTorrentMinPeer,
+                humansize(self.removableSize),
+                humansize(self.availSpace),
+            )
+        )
         for v in self.removeCand:
-            print(f"Name: {v[2]}, size: {humansize(v[1])}")
+            print(f"[{humansize(v[1]):>11}] {v[2]}")
 
     def add_torrent(self, filename: str, content: bytes, size: int):
         if filename not in self.newTorrent:
@@ -329,12 +336,7 @@ class MTeam:
         torrents = []
         cols = {}
 
-        print(
-            "Connecting to M-Team...",
-            "Max avail space: {}, minimum peer: {}, maximum items: {}.".format(
-                humansize(qb.availSpace), qb.newTorrentMinPeer, maxItem
-            ),
-        )
+        print(f"Connecting to M-Team... Maximum items: {maxItem}.")
 
         for feed in self.mteamFeeds:
             feed = urljoin(self.domain, feed)
@@ -402,8 +404,7 @@ class MTeam:
         optWeight, optValue, optTorrents = self.knapsack(torrents, qb.availSpace, maxItem)
 
         print(
-            f"{len(optTorrents)} of {len(torrents)} torrents selected.",
-            f"Size: {humansize(optWeight)}, peer: {optValue}.",
+            f"{len(optTorrents)}/{len(torrents)} torrents selected. Total: {humansize(optWeight)}, {optValue} peers."
         )
 
         for size, peer, tid, title, link in optTorrents:
@@ -419,7 +420,7 @@ class MTeam:
                 log.record("Download", size, title)
                 if not debug:
                     mteamHistory.add(tid)
-                print(f"New torrent: {title}. (Size: {humansize(size)}, peer: {peer})")
+                print(f"[{peer:4} peers] {title}")
 
     @staticmethod
     def knapsack(torrents: list, capacity: int, maxItem=None):
