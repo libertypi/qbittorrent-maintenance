@@ -435,7 +435,6 @@ class MTeam:
                     size = self.size_convert(td[colSize].get_text())
 
                     torrents.append(self.Torrent(title=title, link=link, tid=tid, size=size, peer=peer))
-
                 except Exception as e:
                     print("Parsing page error:", e)
 
