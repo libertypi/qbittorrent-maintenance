@@ -415,10 +415,7 @@ class MIPSolver:
         print(self.sepSlim)
         print(
             "Remove candidates: Count: {}/{}. Size: {}. Max avail space: {}.".format(
-                len(self.removeCand),
-                len(self.qb.torrents),
-                humansize(removeCandSize),
-                humansize(maxAvailSpace),
+                len(self.removeCand), len(self.qb.torrents), humansize(removeCandSize), humansize(maxAvailSpace)
             )
         )
         for v in self.removeCand:
@@ -442,11 +439,7 @@ class MIPSolver:
             print(self.sepSlim)
             print(
                 "{}: {}/{} items. Total: {}, {} peers.".format(
-                    title,
-                    len(final),
-                    len(cand),
-                    humansize(sum(i.size for i in final)),
-                    sum(i.peer for i in final),
+                    title, len(final), len(cand), humansize(sum(i.size for i in final)), sum(i.peer for i in final)
                 )
             )
             for v in final:
@@ -456,14 +449,7 @@ class MIPSolver:
 
 class Log(list):
     def record(self, action, size, name):
-        self.append(
-            "{:20}{:12}{:14}{}\n".format(
-                pd.Timestamp.now().strftime("%D %T"),
-                action,
-                humansize(size),
-                name,
-            )
-        )
+        self.append("{:20}{:12}{:14}{}\n".format(pd.Timestamp.now().strftime("%D %T"), action, humansize(size), name))
 
     def write(self, logfile: str, backupDir=None):
         if not self or debug:
