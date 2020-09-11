@@ -36,7 +36,7 @@ class qBittorrent:
         if self.state["connection_status"] not in ("connected", "firewalled"):
             raise RuntimeError("qBittorrent is not connected to the internet.")
 
-        self.RemoveList = namedtuple("RemoveList", ("hash", "speed", "size", "name"))
+        self.Removable = namedtuple("Removable", ("hash", "speed", "size", "name"))
         self.removeCand = None
         self.newTorrent = {}
         self.removableSize = self.demandSize = 0
@@ -103,11 +103,10 @@ class qBittorrent:
 
     def build_remove_lists(self, data):
         trs = self.torrents
-        rm = self.RemoveList
         oneDayAgo = pd.Timestamp.now().timestamp() - 86400
 
         self.removeCand = tuple(
-            rm(hash=k, speed=v, size=trs[k]["size"], name=trs[k]["name"])
+            self.Removable(hash=k, speed=v, size=trs[k]["size"], name=trs[k]["name"])
             for k, v in data.get_slows()
             if trs[k]["added_on"] < oneDayAgo
         )
@@ -297,8 +296,8 @@ class Data:
         """
         speeds = self.torrentFrame.last("D").resample("T").bfill().diff().mean()
         try:
-            breaks = speeds.count().item() - 1
-            breaks = jenks_breaks(speeds, nb_class=(4 if breaks > 4 else breaks))[1]
+            breaks = speeds.count() - 1
+            breaks = jenks_breaks(speeds, nb_class=(4 if breaks >= 4 else breaks.item()))[1]
         except Exception:
             breaks = speeds.mean()
         return speeds.loc[speeds <= breaks].iteritems()
@@ -365,6 +364,7 @@ class MTeam:
         self.loginPayload = {"username": mteamAccount[0], "password": mteamAccount[1]}
         self.loginPage = urljoin(self.domain, "takelogin.php")
         self.loginReferer = {"referer": urljoin(self.domain, "login.php")}
+        self.Torrent = namedtuple("Torrent", ("title", "link", "tid", "size", "peer"))
 
     def run(self, maxItem=None):
         session = data.session
@@ -419,7 +419,7 @@ class MTeam:
                     td = tr.find_all("td", recursive=False)
 
                     peer = int(re_nondigit.sub("", td[colDown].get_text()))
-                    if peer <= newTorrentMinPeer:
+                    if peer < newTorrentMinPeer:
                         continue
                     link = td[colTitle].find("a", href=re_download)["href"]
                     tid = re_tid.search(link).group(1)
@@ -434,7 +434,7 @@ class MTeam:
                     title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
                     size = self.size_convert(td[colSize].get_text())
 
-                    torrents.append((size, peer, tid, title, link))
+                    torrents.append(self.Torrent(title=title, link=link, tid=tid, size=size, peer=peer))
 
                 except Exception as e:
                     print("Parsing page error:", e)
@@ -451,19 +451,19 @@ class MTeam:
             )
         )
 
-        for size, peer, tid, title, link in optTorrents:
+        for t in optTorrents:
             try:
-                response = session.get(urljoin(self.domain, link))
+                response = session.get(urljoin(self.domain, t.link))
                 response.raise_for_status()
             except Exception as e:
                 print("Downloading torrents failed.", e)
                 return
 
-            if qb.add_torrent(f"{tid}.torrent", response.content, size):
-                log.record("Download", size, title)
+            if qb.add_torrent(f"{t.tid}.torrent", response.content, t.size):
+                print(f"[{t.peer:4} peers] {t.title}")
+                log.record("Download", t.size, t.title)
                 if not debug:
-                    mteamHistory.add(tid)
-                print(f"[{peer:4} peers] {title}")
+                    mteamHistory.add(t.tid)
 
     @staticmethod
     def knapsack(torrents: list, capacity: int, maxItem=None):
@@ -471,12 +471,12 @@ class MTeam:
         Using OR-Tools from Google to solve the 0-1 knapsack problem.
         To find a subset of the list whose counts is under maxItem and
         fits inside capacity and maximizes the total value (peer counts).
-        Input should be a list of tuples: [(size, peer, ...), ...]
+        Input should be a list of named tuples with size and peer fields.
         return a tuple of the optimal total size, total peers, torrent list.
         """
 
-        weights = tuple(t[0] for t in torrents)
-        values = tuple(t[1] for t in torrents)
+        weights = tuple(t.size for t in torrents)
+        values = tuple(t.peer for t in torrents)
         if maxItem is None:
             weights = [weights]
             capacities = (capacity,)
@@ -489,9 +489,8 @@ class MTeam:
         )
         solver.Init(values, weights, capacities)
         optValue = solver.Solve()
-
         optTorrents = tuple(t for i, t in enumerate(torrents) if solver.BestSolutionContains(i))
-        optWeight = sum(t[0] for t in optTorrents)
+        optWeight = sum(t.size for t in optTorrents)
 
         return optWeight, optValue, optTorrents
 
