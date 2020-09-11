@@ -36,7 +36,7 @@ class qBittorrent:
         if self.state["connection_status"] not in ("connected", "firewalled"):
             raise RuntimeError("qBittorrent is not connected to the internet.")
 
-        self.removable = namedtuple("RemoveList", ("hash", "speed", "size", "name"))
+        self.RemoveList = namedtuple("RemoveList", ("hash", "speed", "size", "name"))
         self.removeCand = None
         self.newTorrent = {}
         self.removableSize = self.demandSize = 0
@@ -103,7 +103,7 @@ class qBittorrent:
 
     def build_remove_lists(self, data):
         trs = self.torrents
-        rm = self.removable
+        rm = self.RemoveList
         oneDayAgo = pd.Timestamp.now().timestamp() - 86400
 
         self.removeCand = tuple(
