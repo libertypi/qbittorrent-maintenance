@@ -120,13 +120,13 @@ class qBittorrent:
             return
 
         for t, content in torrentFiles:
-            path = os.path.join(self.watchDir, f"{t[0]}.torrent")
+            path = os.path.join(self.watchDir, f"{t.tid}.torrent")
             try:
                 with open(path, "wb") as f:
                     f.write(content)
                 log.record("Download", t.size, t.title)
             except Exception as e:
-                log.record("Error", None, f"Writing torrent '{t.title}' to '{self.watchDir}' failed: {e}")
+                log.record("Error", None, f"Saving torrent '{t.title}' to '{self.watchDir}' failed: {e}")
 
     def resume_paused(self):
         paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
@@ -249,15 +249,15 @@ class MTeam:
                     soup = BeautifulSoup(response.content, "html.parser")
                     if "login.php" in response.url or "登錄" in soup.title.string:
                         assert i < 4, "login failed."
+                        print("login... ", end="", flush=True)
                         session.post(self.loginPage, data=self.loginPayload, headers=self.loginReferer)
                     else:
                         break
                 except Exception as e:
                     if i < 4:
-                        print(f"Retrying... Attempt: {i+1}, Error: {e}")
+                        print("Retrying... Attempt:", i + 1)
                         session = self.data.init_session()
-                        continue
-                    print(e)
+                    print("Error:", e)
             else:
                 return
 
@@ -316,6 +316,24 @@ class MTeam:
 
 
 class MIPSolver:
+    """
+    Using OR-Tools from Google to find the best combination of downloads and removals.
+    The goal is to maximize obtained peers under several constraints.
+
+    Constraints:
+        1, sum(downloadSize) < freeSpace + sum(removedSize)
+            --> sum(downloadSize) - sum(removedSize) < freeSpace
+            When freeSpace < -sum(removedSize) < 0, this become impossible to satisfy.
+            So the second algorithm findMinSum will be used.
+        2, When free space > 0: sum(downloadPeer) > sum(removedPeer)
+            This constraint will be neutralized when freeSpace < 0, so old torrents can be
+            deleted without new complement.
+        3, The amount of downloads should be limited to a sane number, like 3.
+
+    Objective:
+        Maximize: sum(downloadPeer) - sum(removedPeer)
+    """
+
     def __init__(self, removeCand, downloadCand, qb, maxDownload=None) -> None:
         self.solver = pywraplp.Solver.CreateSolver("TorrentOptimizer", "CBC")
         self.qb = qb
@@ -326,16 +344,12 @@ class MIPSolver:
         self.sepSlim = "-" * 50
 
     def solve(self):
-
         solver = self.solver
         infinity = solver.infinity()
 
-        # sum(newSize) - sum(oldSize) < freeSpace
         constSize = solver.Constraint(-infinity, self.freeSpace)
-        # sum(newPeer) - sum(oldPeer) > 0
         constPeer = solver.Constraint(0 if self.freeSpace > 0 else -infinity, infinity)
         constMax = solver.Constraint(0, infinity if self.maxDownload is None else self.maxDownload)
-        # max: sum(newPeer) - sum(oldPeer)
         objective = solver.Objective()
         objective.SetMaximization()
 
@@ -394,7 +408,7 @@ class MIPSolver:
             return optTorrents
         return torrents
 
-    def prelogue(self):
+    def prologue(self):
         removeCandSize = sum(i.size for i in self.removeCand)
         maxAvailSpace = self.freeSpace + removeCandSize
 
@@ -419,7 +433,7 @@ class MIPSolver:
                 )
             )
         else:
-            print(f"Problem solving with MIP solver failed, status: {self.status}.")
+            print(f"Problem solving with MIP failed, status: {self.status}.")
 
         for title, final, cand in (
             ("Download", self.downloadList, self.downloadCand),
@@ -534,7 +548,7 @@ def main():
         downloadCand = mteam.fetch()
 
         mipsolver = MIPSolver(removeCand, downloadCand, qb=qb, maxDownload=3)
-        mipsolver.prelogue()
+        mipsolver.prologue()
         removeList, downloadList = mipsolver.solve()
         mipsolver.report()
 
