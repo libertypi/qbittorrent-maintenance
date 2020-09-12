@@ -120,7 +120,6 @@ class qBittorrent:
             return
 
         for t, content in torrentFiles:
-            i += 1
             path = os.path.join(self.watchDir, f"{t.tid}.torrent")
             try:
                 with open(path, "wb") as f:
