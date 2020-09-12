@@ -14,30 +14,30 @@ from ortools.linear_solver import pywraplp
 
 import qbconfig
 
-byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGT"), (1024 ** s for s in range(1, 5))) for u in us}
-
 
 class qBittorrent:
-    spaceQuota = 50 * byteUnit["GiB"]
-    upSpeedThresh = 2.6 * byteUnit["MiB"]
-    dlSpeedThresh = 8 * byteUnit["MiB"]
+
     Removable = namedtuple("Removable", ("hash", "size", "peer", "title"))
 
-    def __init__(self, qBittorrentHost: str, seedDir: str, watchDir: str):
-        self.api_baseurl = urljoin(qBittorrentHost, "api/v2/")
-        try:
-            self.seedDir = os.path.abspath(seedDir)
-            self.watchDir = os.path.abspath(watchDir)
-        except Exception:
-            self.seedDir = self.watchDir = None
-        self.freeSpace = self.upSpeed = self.dlSpeed = -1
+    def __init__(self, host: str, seedDir: str, watchDir: str, speedThresh: tuple, spaceQuota: int):
 
+        self.api_baseurl = urljoin(host, "api/v2/")
         path = "sync/maindata"
         maindata = self._request(path).json()
         self.state = maindata["server_state"]
         self.torrents = maindata["torrents"]
         if self.state["connection_status"] not in ("connected", "firewalled"):
             raise RuntimeError("qBittorrent is not connected to the internet.")
+
+        try:
+            self.seedDir = os.path.abspath(seedDir)
+            self.watchDir = os.path.abspath(watchDir)
+        except Exception:
+            self.seedDir = self.watchDir = None
+
+        self.upSpeedThresh, self.dlSpeedThresh = (i * byteUnit["MiB"] for i in speedThresh)
+        self.spaceQuota = spaceQuota * byteUnit["GiB"]
+        self.freeSpace = self.upSpeed = self.dlSpeed = -1
 
     def _request(self, path, **kwargs):
         response = requests.get(urljoin(self.api_baseurl, path), **kwargs)
@@ -120,6 +120,7 @@ class qBittorrent:
             return
 
         for t, content in torrentFiles:
+            i += 1
             path = os.path.join(self.watchDir, f"{t.tid}.torrent")
             try:
                 with open(path, "wb") as f:
@@ -219,11 +220,11 @@ class MTeam:
     domain = "https://pt.m-team.cc"
     Torrent = namedtuple("Torrent", ("tid", "size", "peer", "title", "link"))
 
-    def __init__(self, mteamFeeds: tuple, mteamAccount: tuple, data: Data, minPeer=30) -> None:
-        self.mteamFeeds = mteamFeeds
-        self.loginPayload = {"username": mteamAccount[0], "password": mteamAccount[1]}
+    def __init__(self, feeds: tuple, account: tuple, data: Data, minPeer: int) -> None:
+        self.feeds = feeds
+        self.loginPayload = {"username": account[0], "password": account[1]}
         self.data = data
-        self.newTorrentMinPeer = minPeer
+        self.newTorrentMinPeer = minPeer if isinstance(minPeer, int) else 0
         self.loginPage = urljoin(self.domain, "takelogin.php")
         self.loginReferer = {"referer": urljoin(self.domain, "login.php")}
 
@@ -238,9 +239,10 @@ class MTeam:
         re_tid = re.compile(r"id=([0-9]+)")
         cols = {}
 
-        for feed in self.mteamFeeds:
+        print(f"Connecting to M-Team... Feeds: {len(self.feeds)}, minimum peer requirement: {self.newTorrentMinPeer}")
+
+        for feed in self.feeds:
             feed = urljoin(self.domain, feed)
-            print("Connecting to M-Team... ", end="", flush=True)
 
             for i in range(5):
                 try:
@@ -249,19 +251,19 @@ class MTeam:
                     soup = BeautifulSoup(response.content, "html.parser")
                     if "login.php" in response.url or "登錄" in soup.title.string:
                         assert i < 4, "login failed."
-                        print("login... ", end="", flush=True)
+                        print("login...")
                         session.post(self.loginPage, data=self.loginPayload, headers=self.loginReferer)
                     else:
                         break
                 except Exception as e:
+                    print("Error:", e)
                     if i < 4:
                         print("Retrying... Attempt:", i + 1)
                         session = self.data.init_session()
-                    print("Error:", e)
             else:
                 return
 
-            print("Fetching feed success.")
+            print("Fetching feed success, elapsed:", response.elapsed)
 
             for i, td in enumerate(soup.select("#form_torrent table.torrents > tr:nth-of-type(1) > td")):
                 title = td.find(title=True)
@@ -306,7 +308,7 @@ class MTeam:
                 self.data.mteamHistory.add(t.tid)
                 yield t, response.content
         except Exception as e:
-            print("Downloading torrents failed.", e)
+            print("Downloading torrents failed:", e)
 
     @staticmethod
     def size_convert(string):
@@ -334,13 +336,13 @@ class MIPSolver:
         Maximize: sum(downloadPeer) - sum(removedPeer)
     """
 
-    def __init__(self, removeCand, downloadCand, qb, maxDownload=None) -> None:
+    def __init__(self, removeCand, downloadCand, qb: qBittorrent, maxDownload) -> None:
         self.solver = pywraplp.Solver.CreateSolver("TorrentOptimizer", "CBC")
         self.qb = qb
         self.freeSpace = qb.freeSpace
         self.removeCand = tuple(removeCand)
         self.downloadCand = tuple(downloadCand)
-        self.maxDownload = maxDownload
+        self.maxDownload = maxDownload if isinstance(maxDownload, int) else self.solver.infinity()
         self.sepSlim = "-" * 50
 
     def solve(self):
@@ -349,7 +351,7 @@ class MIPSolver:
 
         constSize = solver.Constraint(-infinity, self.freeSpace)
         constPeer = solver.Constraint(0 if self.freeSpace > 0 else -infinity, infinity)
-        constMax = solver.Constraint(0, infinity if self.maxDownload is None else self.maxDownload)
+        constMax = solver.Constraint(0, self.maxDownload)
         objective = solver.Objective()
         objective.SetMaximization()
 
@@ -422,6 +424,10 @@ class MIPSolver:
             print(f"[{humansize(v.size):>11}|{v.peer:4d} peers] {v.title}")
 
     def report(self):
+        downloadSize = sum(i.size for i in self.downloadList)
+        removeSize = sum(i.size for i in self.removeList)
+        finalFreeSpace = self.freeSpace + removeSize - downloadSize
+
         print(self.sepSlim)
         if self.status == self.solver.OPTIMAL:
             print(
@@ -432,14 +438,16 @@ class MIPSolver:
         else:
             print(f"Problem solving with MIP failed, status: {self.status}.")
 
-        for title, final, cand in (
-            ("Download", self.downloadList, self.downloadCand),
-            ("Remove", self.removeList, self.removeCand),
+        print(f"Post-operation free space: {humansize(self.freeSpace)} ==> {humansize(finalFreeSpace)}.")
+
+        for title, final, cand, size in (
+            ("Download", self.downloadList, self.downloadCand, downloadSize),
+            ("Remove", self.removeList, self.removeCand, removeSize),
         ):
             print(self.sepSlim)
             print(
                 "{}: {}/{} items. Total: {}, {} peers.".format(
-                    title, len(final), len(cand), humansize(sum(i.size for i in final)), sum(i.peer for i in final)
+                    title, len(final), len(cand), humansize(size), sum(i.peer for i in final)
                 )
             )
             for v in final:
@@ -522,18 +530,32 @@ def main():
     datafile = os.path.join(script_dir, "data")
     logfile = os.path.join(script_dir, "qb-maintenance.log")
 
-    qb = qBittorrent(config.qBittorrentHost, config.seedDir, config.watchDir)
+    qb = qBittorrent(
+        host=config.qBittorrentHost,
+        seedDir=config.seedDir,
+        watchDir=config.watchDir,
+        speedThresh=config.speedThresh,
+        spaceQuota=config.spaceQuota,
+    )
     data = load_data(datafile)
 
     data.record(qb)
     qb.clean_seedDir()
 
     if qb.need_action() or debug:
-        mteam = MTeam(config.mteamFeeds, config.mteamAccount, data=data, minPeer=30)
-        removeCand = qb.get_remove_cands(data)
-        downloadCand = mteam.fetch()
 
-        mipsolver = MIPSolver(removeCand, downloadCand, qb=qb, maxDownload=3)
+        mteam = MTeam(
+            feeds=config.mteamFeeds,
+            account=config.mteamAccount,
+            data=data,
+            minPeer=config.newTorrentMinPeer,
+        )
+        mipsolver = MIPSolver(
+            removeCand=qb.get_remove_cands(data),
+            downloadCand=mteam.fetch(),
+            qb=qb,
+            maxDownload=config.maxDownload,
+        )
         mipsolver.prologue()
         removeList, downloadList = mipsolver.solve()
         mipsolver.report()
@@ -546,6 +568,7 @@ def main():
     log.write(logfile, config.backupDir)
 
 
+byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGT"), (1024 ** s for s in range(1, 5))) for u in us}
 log = Log()
 debug = False
 
