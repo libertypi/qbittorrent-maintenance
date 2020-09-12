@@ -12,8 +12,6 @@ from bs4 import BeautifulSoup
 from jenkspy import jenks_breaks
 from ortools.linear_solver import pywraplp
 
-import qbconfig
-
 
 class qBittorrent:
 
@@ -78,9 +76,8 @@ class qBittorrent:
     def need_action(self) -> bool:
         self._init_freeSpace()
         print(
-            "qBittorrent average speed last hour:\n"
-            "UL: {}/s, DL: {}/s. Free space: {}".format(
-                humansize(self.upSpeed), humansize(self.dlSpeed), humansize(self.freeSpace)
+            "qBittorrent average speed last hour: UL: {}/s, DL: {}/s.".format(
+                humansize(self.upSpeed), humansize(self.dlSpeed)
             )
         )
         return (
@@ -191,7 +188,7 @@ class Data:
         qb.dlSpeed = speeds["download"]
 
     def get_slows(self):
-        """Trying to discover slow torrents using jenks natural breaks method."""
+        """Discover the slowest torrents using jenks natural breaks method."""
         speeds = self.torrentFrame.last("D").resample("T").bfill().diff().mean()
         try:
             breaks = speeds.count().item() - 1
@@ -415,8 +412,12 @@ class MIPSolver:
 
         print(self.sepSlim)
         print(
-            "Remove candidates: Count: {}/{}. Size: {}. Max avail space: {}.".format(
-                len(self.removeCand), len(self.qb.torrents), humansize(removeCandSize), humansize(maxAvailSpace)
+            "Remove candidates: {}/{}. Size: {}. Disk free space: {}. Max avail space: {}.".format(
+                len(self.removeCand),
+                len(self.qb.torrents),
+                humansize(removeCandSize),
+                humansize(self.freeSpace),
+                humansize(maxAvailSpace),
             )
         )
         for v in self.removeCand:
@@ -435,7 +436,7 @@ class MIPSolver:
                 )
             )
         else:
-            print(f"Problem solving with MIP failed, status: {self.status}.")
+            print(f"MIP Solver failed, status: {self.status}.")
 
         print(f"Post-operation free space: {humansize(self.freeSpace)} ==> {humansize(finalFreeSpace)}.")
 
@@ -445,7 +446,7 @@ class MIPSolver:
         ):
             print(self.sepSlim)
             print(
-                "{}: {}/{} items. Total: {}, {} peers.".format(
+                "{}: {}/{}. Total: {}, {} peers.".format(
                     title, len(final), len(cand), humansize(size), sum(i.peer for i in final)
                 )
             )
@@ -514,6 +515,7 @@ def humansize(size, suffixes=("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "
 
 
 def main():
+    import qbconfig
 
     global debug
     config = qbconfig.Config
