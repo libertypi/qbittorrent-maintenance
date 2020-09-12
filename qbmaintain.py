@@ -339,6 +339,7 @@ class MIPSolver:
             When freeSpace < -sum(removedSize) < 0, this become impossible to satisfy.
             So the second algorithm findMinSum will be used.
         2, When free space > 0: sum(downloadPeer) > sum(removedPeer)
+           --> 0 < sum(downloadPeer) - sum(removedPeer)
             This constraint will be neutralized when freeSpace < 0, so old torrents can be
             deleted without new complement.
         3, The amount of downloads should be limited to a sane number, like 3.
