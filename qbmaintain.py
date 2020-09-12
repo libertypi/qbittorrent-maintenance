@@ -300,12 +300,11 @@ class MTeam:
     def download(self, downloadList: tuple):
         for t in downloadList:
             response = self._get(urljoin(self.domain, t.link))
-            if response is not None:
-                self.data.mteamHistory.add(t.tid)
-                yield t, response.content
-            else:
+            if response is None:
                 print(f"Downloading torrent '{t.title}' failed.")
                 return
+            self.data.mteamHistory.add(t.tid)
+            yield t, response.content
 
     @staticmethod
     def size_convert(string: str) -> int:
