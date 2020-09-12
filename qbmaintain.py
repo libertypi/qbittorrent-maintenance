@@ -182,7 +182,7 @@ class Data:
             (self.session, requests.Session),
         )
         if not all(isinstance(x, y) for x, y in attrs):
-            raise Exception("Intergrity check failed.")
+            raise Exception("Intergrity test failed.")
 
     def record(self, qb: qBittorrent):
         """Record qBittorrent traffic data to pandas DataFrame.
@@ -211,7 +211,7 @@ class Data:
         speeds = self.qBittorrentFrame.last("H").resample("T").bfill().diff().mean().floordiv(60)
         return speeds["upload"], speeds["download"]
 
-    def get_slows(self):
+    def get_slows(self) -> pd.Index:
         """Discover the slowest torrents using jenks natural breaks method."""
         speeds = self.torrentFrame.last("D").resample("T").bfill().diff().mean()
         try:
@@ -245,11 +245,11 @@ class MTeam:
                 response.raise_for_status()
                 if "/login.php" not in response.url:
                     return response
-                assert i < 4, "login failed."
-                print("login...")
+                assert i < 4, "Login failed."
+                print("Login...")
                 self.session.post(self.loginPage, data=self.loginPayload, headers=self.loginReferer)
             except Exception as e:
-                print("Error:", e)
+                print(e)
                 if i < 4:
                     print("Retrying... Attempt:", i + 1)
                     self.session = self.qb.data.init_session()
