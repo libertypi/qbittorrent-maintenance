@@ -103,9 +103,8 @@ class qBittorrent:
             log.record("Remove", v.size, v.title)
 
     def upload(self, torrentFiles):
-        """
-        Upload torrent to qBittorrent watch dir.
-        : torrentFiles: namedtuple(Torrent), content(bytes)
+        """Upload torrents to qBittorrent watch dir.
+        :torrentFiles: namedtuple(Torrent), content(bytes)
         """
         if debug:
             return
@@ -224,42 +223,44 @@ class MTeam:
         self.loginPage = urljoin(self.domain, "takelogin.php")
         self.loginReferer = {"referer": urljoin(self.domain, "login.php")}
 
-    def fetch(self):
+    def _get(self, url: str):
         session = self.data.session
+        for i in range(5):
+            try:
+                response = session.get(url)
+                response.raise_for_status()
+                if "/login.php" not in response.url:
+                    return response
+
+                assert i < 4, "login failed."
+                print("login...")
+                session.post(self.loginPage, data=self.loginPayload, headers=self.loginReferer)
+            except Exception as e:
+                print("Error:", e)
+                if i < 4:
+                    print("Retrying... Attempt:", i + 1)
+                    session = self.data.init_session()
+
+    def fetch(self):
         mteamHistory = self.data.mteamHistory
         newTorrentMinPeer = self.newTorrentMinPeer
         re_download = re.compile(r"\bdownload.php\?")
         re_details = re.compile(r"\bdetails.php\?")
         re_timelimit = re.compile(r"限時：[^日]*$")
         re_nondigit = re.compile(r"[^0-9]+")
-        re_tid = re.compile(r"id=([0-9]+)")
+        re_tid = re.compile(r"\bid=(?P<tid>[0-9]+)")
         cols = {}
 
         print(f"Connecting to M-Team... Feeds: {len(self.feeds)}, minimum peer requirement: {self.newTorrentMinPeer}")
 
         for feed in self.feeds:
-            feed = urljoin(self.domain, feed)
-
-            for i in range(5):
-                try:
-                    response = session.get(feed)
-                    response.raise_for_status()
-                    soup = BeautifulSoup(response.content, "html.parser")
-                    if "login.php" in response.url or "登錄" in soup.title.string:
-                        assert i < 4, "login failed."
-                        print("login...")
-                        session.post(self.loginPage, data=self.loginPayload, headers=self.loginReferer)
-                    else:
-                        break
-                except Exception as e:
-                    print("Error:", e)
-                    if i < 4:
-                        print("Retrying... Attempt:", i + 1)
-                        session = self.data.init_session()
-            else:
+            try:
+                response = self._get(urljoin(self.domain, feed))
+                soup = BeautifulSoup(response.content, "html.parser")
+                print("Fetching feed success, elapsed:", response.elapsed)
+            except Exception:
+                print("Fetching feed failed.")
                 return
-
-            print("Fetching feed success, elapsed:", response.elapsed)
 
             for i, td in enumerate(soup.select("#form_torrent table.torrents > tr:nth-of-type(1) > td")):
                 title = td.find(title=True)
@@ -280,7 +281,7 @@ class MTeam:
                     if peer < newTorrentMinPeer:
                         continue
                     link = td[colTitle].find("a", href=re_download)["href"]
-                    tid = re_tid.search(link).group(1)
+                    tid = re_tid.search(link)["tid"]
                     if (
                         tid in mteamHistory
                         or td[colTitle].find(string=re_timelimit)
@@ -297,18 +298,20 @@ class MTeam:
                     print("Parsing page error:", e)
 
     def download(self, downloadList: tuple):
-        try:
-            for t in downloadList:
-                response = self.data.session.get(urljoin(self.domain, t.link))
-                response.raise_for_status()
+        for t in downloadList:
+            response = self._get(urljoin(self.domain, t.link))
+            if response is not None:
                 self.data.mteamHistory.add(t.tid)
                 yield t, response.content
-        except Exception as e:
-            print("Downloading torrents failed:", e)
+            else:
+                print(f"Downloading torrent '{t.title}' failed.")
+                return
 
     @staticmethod
-    def size_convert(string):
-        """Should be wrapped inside a try...except block"""
+    def size_convert(string: str) -> int:
+        """Convert human readable size to bytes. Should be wrapped inside a try...except block.
+        Example: size_convert('15GB') -> 16106127360
+        """
         m = re.search(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[TGMK]i?B)", string)
         return int(float(m["num"]) * byteUnit[m["unit"]])
 
@@ -402,8 +405,7 @@ class MIPSolver:
             minKeys = 2 ** length - 1
             masks = tuple(1 << i for i in range(length))
             _innerLoop()
-            optTorrents = tuple(i for n, i in enumerate(torrents) if minKeys & masks[n])
-            return optTorrents
+            return tuple(i for n, i in enumerate(torrents) if minKeys & masks[n])
         return torrents
 
     def prologue(self):
