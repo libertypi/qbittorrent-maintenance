@@ -276,8 +276,8 @@ class MTeam:
 
             for i, td in enumerate(soup.select("#form_torrent table.torrents > tr:nth-of-type(1) > td")):
                 title = td.find(title=True)
-                title = title["title"] if title else td.get_text(strip=True)
-                cols[title] = i
+                title = title["title"] if title else td.get_text()
+                cols[title.strip()] = i
 
             colTitle = cols.get("標題", 1)
             colSize = cols.get("大小", 4)
@@ -480,7 +480,6 @@ class Log(list):
         sep = "-" * 80
         header = "{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", sep)
         self.reverse()
-
         if debug:
             print(sep)
             print(header, *self, end="")
@@ -491,13 +490,11 @@ class Log(list):
                 oldLog = f.readlines()[2:]
         except Exception:
             oldLog = None
-
         with open(logfile, mode="w", encoding="utf-8") as f:
             f.write(header)
             f.writelines(self)
             if oldLog:
                 f.writelines(oldLog)
-
         if backupDir:
             copy_backup(logfile, backupDir)
 
