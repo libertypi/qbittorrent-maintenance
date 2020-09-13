@@ -63,13 +63,15 @@ class qBittorrent:
 
     def clean_seedDir(self):
         try:
-            names = set(i["name"] for i in self.torrents.values())
-            if os.path.samefile(os.path.dirname(self.watchDir), self.seedDir):
-                names.add(os.path.basename(self.watchDir))
+            watchDir = os.path.split(self.watchDir)
         except Exception:
             return
 
+        names = set(i["name"] for i in self.torrents.values())
+        if watchDir[0] == self.seedDir:
+            names.add(watchDir[1])
         re_ext = re.compile(r"\.!qB$")
+
         with os.scandir(self.seedDir) as it:
             for entry in it:
                 if re_ext.sub("", entry.name) not in names:
@@ -106,7 +108,7 @@ class qBittorrent:
         ) or self.freeSpace < 0
 
     def get_remove_cands(self):
-        oneDayAgo = pd.Timestamp.now().timestamp() - 86400
+        oneDayAgo = pd.Timestamp.now(tz="UTC").timestamp() - 86400
         for k in self.data.get_slows():
             v = self.torrents[k]
             if v["added_on"] < oneDayAgo:
@@ -120,7 +122,7 @@ class qBittorrent:
         for v in removeList:
             log.record("Remove", v.size, v.title)
 
-    def add_torrent(self, filename: str, content: bytes):
+    def add_torrent(self, filename: str, content: bytes) -> bool:
         """Save torrent to watchdir."""
         if not debug:
             try:
@@ -270,17 +272,22 @@ class MTeam:
         for feed in self.feeds:
             try:
                 response = self._get(urljoin(self.domain, feed))
-                soup = iter(BeautifulSoup(response.content, "html.parser").select("#form_torrent table.torrents > tr"))
+                soup = (
+                    tr.find_all("td", recursive=False)
+                    for tr in BeautifulSoup(response.content, "html.parser").select(
+                        "#form_torrent table.torrents > tr"
+                    )
+                )
                 print("Fetching feed success, elapsed:", response.elapsed)
                 tr = next(soup)
             except StopIteration:
                 print("Unable to locate torrent table, css selector may be erroneous.")
-                return
+                continue
             except Exception:
                 print("Fetching feed failed.")
-                return
+                continue
 
-            for i, td in enumerate(tr.find_all("td", recursive=False)):
+            for i, td in enumerate(tr):
                 title = td.find(title=True)
                 title = title["title"] if title else td.get_text()
                 cols[title.strip()] = i
@@ -293,23 +300,21 @@ class MTeam:
 
             for tr in soup:
                 try:
-                    td = tr.find_all("td", recursive=False)
-
-                    peer = int(re_nondigit.sub("", td[colDown].get_text()))
+                    peer = int(re_nondigit.sub("", tr[colDown].get_text()))
                     if peer < newTorrentMinPeer:
                         continue
-                    link = td[colTitle].find("a", href=re_download)["href"]
+                    link = tr[colTitle].find("a", href=re_download)["href"]
                     tid = re_tid.search(link)["tid"]
                     if (
                         tid in self.history
-                        or td[colTitle].find(string=re_timelimit)
-                        or td[colUp].get_text(strip=True) == "0"
+                        or tr[colTitle].find(string=re_timelimit)
+                        or tr[colUp].get_text(strip=True) == "0"
                     ):
                         continue
 
-                    title = td[colTitle].find("a", href=re_details, string=True)
+                    title = tr[colTitle].find("a", href=re_details, string=True)
                     title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
-                    size = self.size_convert(td[colSize].get_text())
+                    size = self.size_convert(tr[colSize].get_text())
 
                     yield self.Torrent(tid=tid, size=size, peer=peer, title=title, link=link)
                 except Exception as e:
@@ -453,7 +458,7 @@ class MIPSolver:
         else:
             print(f"MIP solver cannot find an optimal solution, status: {self.status}.")
 
-        print(f"Post-operation free space: {humansize(self.freeSpace)} ==> {humansize(finalFreeSpace)}.")
+        print(f"Free space left after operation: {humansize(self.freeSpace)} ==> {humansize(finalFreeSpace)}.")
 
         for title, final, cand, size in (
             ("Download", self.downloadList, self.downloadCand, downloadSize),
