@@ -62,28 +62,27 @@ class qBittorrent:
         return data
 
     def clean_seedDir(self):
-        if not self.seedDir:
+        try:
+            names = set(i["name"] for i in self.torrents.values())
+            if os.path.samefile(os.path.dirname(self.watchDir), self.seedDir):
+                names.add(os.path.basename(self.watchDir))
+        except Exception:
             return
 
         re_ext = re.compile(r"\.!qB$")
-        names = set(i["name"] for i in self.torrents.values())
-        if os.path.dirname(self.watchDir) == self.seedDir:
-            names.add(os.path.basename(self.watchDir))
-
         with os.scandir(self.seedDir) as it:
             for entry in it:
                 if re_ext.sub("", entry.name) not in names:
                     print("Cleanup:", entry.name)
-                    if not debug:
-                        try:
+                    try:
+                        if not debug:
                             if entry.is_dir():
                                 shutil.rmtree(entry.path)
                             else:
                                 os.remove(entry.path)
-                        except Exception as e:
-                            print("Deletion Failed:", e)
-                            continue
-                    log.record("Cleanup", None, entry.name)
+                        log.record("Cleanup", None, entry.name)
+                    except Exception as e:
+                        print("Deletion Failed:", e)
 
     def _init_freeSpace(self):
         try:
@@ -129,6 +128,12 @@ class qBittorrent:
                 with open(path, "wb") as f:
                     f.write(content)
             except Exception as e:
+                try:
+                    if not os.path.exists(self.watchDir):
+                        os.mkdir(self.watchDir)
+                        return self.add_torrent(filename, content)
+                except Exception:
+                    pass
                 log.record("Error", None, f"Saving '{filename}' to '{self.watchDir}' failed: {e}")
                 print("Saving failed:", e)
                 return False
@@ -149,12 +154,11 @@ class qBittorrent:
         try:
             with open(self.datafile, "wb") as f:
                 pickle.dump(self.data, f)
+            if backupDir:
+                copy_backup(self.datafile, backupDir)
         except Exception as e:
             log.record("Error", None, f"Writing data to disk failed: {e}")
             print("Writing data to disk failed:", e)
-            return
-        if backupDir:
-            copy_backup(self.datafile, backupDir)
 
 
 class Data:
@@ -168,9 +172,7 @@ class Data:
         """Initialize a new requests session."""
         self.session = requests.session()
         self.session.headers.update(
-            {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.116 Safari/537.36"
-            }
+            {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) Gecko/20100101 Firefox/80.0"}
         )
         return self.session
 
@@ -268,13 +270,17 @@ class MTeam:
         for feed in self.feeds:
             try:
                 response = self._get(urljoin(self.domain, feed))
-                soup = BeautifulSoup(response.content, "html.parser")
+                soup = iter(BeautifulSoup(response.content, "html.parser").select("#form_torrent table.torrents > tr"))
                 print("Fetching feed success, elapsed:", response.elapsed)
+                tr = next(soup)
+            except StopIteration:
+                print("Unable to locate torrent table, css selector may be erroneous.")
+                return
             except Exception:
                 print("Fetching feed failed.")
                 return
 
-            for i, td in enumerate(soup.select("#form_torrent table.torrents > tr:nth-of-type(1) > td")):
+            for i, td in enumerate(tr.find_all("td", recursive=False)):
                 title = td.find(title=True)
                 title = title["title"] if title else td.get_text()
                 cols[title.strip()] = i
@@ -285,7 +291,7 @@ class MTeam:
             colDown = cols.get("下載數", 6)
             cols.clear()
 
-            for tr in soup.select("#form_torrent table.torrents > tr:not(:nth-of-type(1))"):
+            for tr in soup:
                 try:
                     td = tr.find_all("td", recursive=False)
 
@@ -334,11 +340,11 @@ class MIPSolver:
     The goal is to maximize obtained peers under several constraints.
 
     Constraints:
-        1, sum(downloadSize) < freeSpace + sum(removedSize)
-            --> sum(downloadSize) - sum(removedSize) < freeSpace
+        1, sum(downloadSize) <= freeSpace + sum(removedSize)
+            --> sum(downloadSize) - sum(removedSize) <= freeSpace
             When freeSpace < -sum(removedSize) < 0, this become impossible to satisfy.
             So the second algorithm findMinSum will be used.
-        2, When free space > 0: sum(downloadPeer) > sum(removedPeer)
+        2, sum(downloadPeer) > sum(removedPeer)
            --> 0 < sum(downloadPeer) - sum(removedPeer)
             This constraint will be neutralized when freeSpace < 0, so old torrents can be
             deleted without new complement.
@@ -426,15 +432,9 @@ class MIPSolver:
         maxAvailSpace = self.freeSpace + removeCandSize
 
         print(self.sepSlim)
-        print(
-            "Remove candidates: {}/{}. Size: {}. Disk free space: {}. Max avail space: {}.".format(
-                len(self.removeCand),
-                len(self.qb.torrents),
-                humansize(removeCandSize),
-                humansize(self.freeSpace),
-                humansize(maxAvailSpace),
-            )
-        )
+        print(f"Torrents fetched: {len(self.downloadCand)}. Maximum downloads: {self.maxDownload}.")
+        print(f"Remove candidates: {len(self.removeCand)}/{len(self.qb.torrents)}. Size: {humansize(removeCandSize)}.")
+        print(f"Disk free space: {humansize(self.freeSpace)}. Max avail space: {humansize(maxAvailSpace)}.")
         for v in self.removeCand:
             print(f"[{humansize(v.size):>11}|{v.peer:4d} peers] {v.title}")
 
@@ -451,7 +451,7 @@ class MIPSolver:
                 )
             )
         else:
-            print(f"MIP Solver failed, status: {self.status}.")
+            print(f"MIP solver cannot find an optimal solution, status: {self.status}.")
 
         print(f"Post-operation free space: {humansize(self.freeSpace)} ==> {humansize(finalFreeSpace)}.")
 
@@ -481,23 +481,23 @@ class Log(list):
         sep = "-" * 80
         header = "{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", sep)
         self.reverse()
+
         if debug:
             print(sep)
-            print(header, *self, end="")
-            return
-
-        try:
-            with open(logfile, mode="r", encoding="utf-8") as f:
-                oldLog = f.readlines()[2:]
-        except Exception:
-            oldLog = None
-        with open(logfile, mode="w", encoding="utf-8") as f:
-            f.write(header)
-            f.writelines(self)
-            if oldLog:
-                f.writelines(oldLog)
-        if backupDir:
-            copy_backup(logfile, backupDir)
+            print(header, *self, sep="", end="")
+        else:
+            try:
+                with open(logfile, mode="r", encoding="utf-8") as f:
+                    oldLog = f.readlines()[2:]
+            except Exception:
+                oldLog = None
+            with open(logfile, mode="w", encoding="utf-8") as f:
+                f.write(header)
+                f.writelines(self)
+                if oldLog:
+                    f.writelines(oldLog)
+            if backupDir:
+                copy_backup(logfile, backupDir)
 
 
 def copy_backup(source, dest):
@@ -567,8 +567,8 @@ def main():
         mteam.download(downloadList)
 
     qb.resume_paused()
-    qb.dump_data(config.backupDir)
-    log.write(logfile, config.backupDir)
+    qb.dump_data(backupDir=config.backupDir)
+    log.write(logfile, backupDir=config.backupDir)
 
 
 byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGT"), (1024 ** s for s in range(1, 5))) for u in us}
