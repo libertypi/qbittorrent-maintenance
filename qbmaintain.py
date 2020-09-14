@@ -419,17 +419,19 @@ class MIPSolver:
                     currentKeys = parentKeys | masks[n]
                     if currentSum < targetSize:
                         _innerLoop(currentKeys, currentSum, n + 1)
-                    else:
-                        minKeys, minSum = currentKeys, currentSum
+                        continue
+                    minKeys, minSum = currentKeys, currentSum
+                break
 
-        nums = tuple(i.size for i in torrents)
+        sTorrents = sorted(torrents, key=lambda i: i.size)
+        nums = tuple(i.size for i in sTorrents)
         minSum = sum(nums)
         if minSum > targetSize:
             length = len(nums)
             minKeys = 2 ** length - 1
             masks = tuple(1 << i for i in range(length))
             _innerLoop()
-            return tuple(i for n, i in enumerate(torrents) if minKeys & masks[n])
+            return tuple(i for n, i in enumerate(sTorrents) if minKeys & masks[n])
         return torrents
 
     def prologue(self):
