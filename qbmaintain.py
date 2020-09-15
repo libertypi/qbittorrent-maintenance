@@ -400,8 +400,6 @@ class MIPSolver:
             self.removeList = self.findMinSum(self.removeCand, -self.freeSpace) if self.freeSpace < 0 else tuple()
             self.downloadList = tuple()
 
-        return self.removeList, self.downloadList
-
     @staticmethod
     def findMinSum(torrents: tuple, targetSize: int):
         """
@@ -446,8 +444,8 @@ class MIPSolver:
             print(f"[{humansize(v.size):>11}|{v.peer:4d} peers] {v.title}")
 
     def report(self):
-        downloadSize = sum(i.size for i in self.downloadList)
         removeSize = sum(i.size for i in self.removeList)
+        downloadSize = sum(i.size for i in self.downloadList)
         finalFreeSpace = self.freeSpace + removeSize - downloadSize
 
         print(self.sepSlim)
@@ -567,11 +565,11 @@ def main():
             qb=qb,
         )
         mipsolver.prologue()
-        removeList, downloadList = mipsolver.solve()
+        mipsolver.solve()
         mipsolver.report()
 
-        qb.remove_torrents(removeList)
-        mteam.download(downloadList)
+        qb.remove_torrents(mipsolver.removeList)
+        mteam.download(mipsolver.downloadList)
 
     qb.resume_paused()
     qb.dump_data(backupDir=config.backupDir)
