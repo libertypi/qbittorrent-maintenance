@@ -391,8 +391,11 @@ class MIPSolver:
             self.removeList = self.removeCand if self.freeSpace < -self.removeCandSize else tuple()
             self.downloadList = tuple()
 
-    def prologue(self):
+    def report(self):
         maxAvailSpace = self.freeSpace + self.removeCandSize
+        removeSize = sum(i.size for i in self.removeList)
+        downloadSize = sum(i.size for i in self.downloadList)
+        finalFreeSpace = self.freeSpace + removeSize - downloadSize
 
         print(self.sepSlim)
         print(f"Torrents fetched: {len(self.downloadCand)}. Maximum downloads: {self.maxDownload}.")
@@ -404,11 +407,6 @@ class MIPSolver:
         print(f"Disk free space: {humansize(self.freeSpace)}. Max avail space: {humansize(maxAvailSpace)}.")
         for v in self.removeCand:
             print(f"[{humansize(v.size):>11}|{v.peer:4d} peers] {v.title}")
-
-    def report(self):
-        removeSize = sum(i.size for i in self.removeList)
-        downloadSize = sum(i.size for i in self.downloadList)
-        finalFreeSpace = self.freeSpace + removeSize - downloadSize
 
         print(self.sepSlim)
         if self.optimal:
@@ -558,7 +556,6 @@ def main():
             maxDownload=config.maxDownload,
             qb=qb,
         )
-        mipsolver.prologue()
         mipsolver.solve()
         mipsolver.report()
 
