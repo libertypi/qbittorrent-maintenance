@@ -257,8 +257,8 @@ class MTeam:
                     self.session = self.qb.data.init_session()
 
     def fetch(self):
-        re_download = re.compile(r"\bdownload.php\?")
-        re_details = re.compile(r"\bdetails.php\?")
+        re_download = re.compile(r"\bdownload\.php\?")
+        re_details = re.compile(r"\bdetails\.php\?")
         re_timelimit = re.compile(r"限時：[^日]*$")
         re_nondigit = re.compile(r"[^0-9]+")
         re_tid = re.compile(r"\bid=(?P<tid>[0-9]+)")
@@ -355,14 +355,14 @@ class MIPSolver:
     """
 
     def __init__(self, *, removeCand, downloadCand, maxDownload, qb: qBittorrent) -> None:
-        self.solver = pywraplp.Solver.CreateSolver("TorrentOptimizer", "CBC")
         self.removeCand = tuple(removeCand)
         self.downloadCand = tuple(downloadCand)
-        self.maxDownload = maxDownload if isinstance(maxDownload, int) else self.solver.infinity()
+        self.removeCandSize = sum(i.size for i in self.removeCand)
         self.qb = qb
         self.freeSpace = qb.freeSpace
-        self.removeCandSize = sum(i.size for i in self.removeCand)
         self.sepSlim = "-" * 50
+        self.solver = pywraplp.Solver.CreateSolver("TorrentOptimizer", "CBC")
+        self.maxDownload = maxDownload if isinstance(maxDownload, int) else self.solver.infinity()
 
     def solve(self):
         solver = self.solver
