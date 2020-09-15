@@ -245,7 +245,7 @@ class MTeam:
     def _get(self, url: str):
         for i in range(5):
             try:
-                response = self.session.get(url)
+                response = self.session.get(url, timeout=(7, 28))
                 response.raise_for_status()
                 if "/login.php" not in response.url:
                     return response
