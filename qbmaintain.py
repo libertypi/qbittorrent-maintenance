@@ -189,9 +189,7 @@ class Data:
             raise Exception("Intergrity test failed.")
 
     def record(self, qb: qBittorrent):
-        """Record qBittorrent traffic data to pandas DataFrame.
-        Returns qB's last hour avg UL/DL speeds.
-        """
+        """Record qBittorrent traffic data to pandas DataFrame. Returns the last hour avg UL/DL speeds."""
 
         now = pd.Timestamp.now()
         qBittorrentRow = pd.DataFrame(
@@ -332,7 +330,9 @@ class MTeam:
 
     @staticmethod
     def size_convert(string: str) -> int:
-        """Convert human readable size to bytes. Should be wrapped inside a try...except block.
+        """Convert human readable size to bytes.
+
+        Should be wrapped inside a try...except block.
         Example: size_convert('15GB') -> 16106127360
         """
         m = re.search(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[TGMK]i?B)", string)
@@ -340,8 +340,7 @@ class MTeam:
 
 
 class MIPSolver:
-    """
-    Using OR-Tools from Google to find the best combination of downloads and removals.
+    """Using OR-Tools from Google to find the best combination of downloads and removals.
     The goal is to maximize obtained peers under several constraints.
 
     Constraints:
@@ -402,11 +401,11 @@ class MIPSolver:
 
     @staticmethod
     def findMinSum(torrents: tuple, targetSize: int):
-        """
-        Find the minimum sum of a list of numbers to reach the target size.
+        """Find a minimum subset whose sum reaches the target size.
+
         Input should be a list of named tuples with a "size" field.
         Returns a new tuple of tuples.
-        If the sum is lesser than the target, return the original input.
+        If the maximum sum is lesser than the target, returns the original input.
         """
 
         def _innerLoop(parentKeys=0, parentSum=0, i=0):
