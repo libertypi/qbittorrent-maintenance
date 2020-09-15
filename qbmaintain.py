@@ -41,7 +41,7 @@ class qBittorrent:
         self.upSpeed, self.dlSpeed = self.data.record(self)
 
     def _request(self, path, **kwargs):
-        response = requests.get(urljoin(self.api_baseurl, path), **kwargs)
+        response = requests.get(urljoin(self.api_baseurl, path), **kwargs, timeout=7)
         response.raise_for_status()
         return response
 
@@ -243,18 +243,18 @@ class MTeam:
         self.loginReferer = {"referer": urljoin(self.domain, "login.php")}
 
     def _get(self, url: str):
-        for i in range(5):
+        for i in range(3):
             try:
                 response = self.session.get(url, timeout=(7, 28))
                 response.raise_for_status()
                 if "/login.php" not in response.url:
                     return response
-                assert i < 4, "Login failed."
+                assert i < 2, "Login failed."
                 print("Login...")
                 self.session.post(self.loginPage, data=self.loginPayload, headers=self.loginReferer)
             except Exception as e:
                 print(e)
-                if i < 4:
+                if i < 2:
                     print("Retrying... Attempt:", i + 1)
                     self.session = self.qb.data.init_session()
 
