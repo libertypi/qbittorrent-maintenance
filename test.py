@@ -40,7 +40,7 @@ class TestMIP(unittest.TestCase):
             removeCand=removeCand, downloadCand=downloadCand, maxDownload=None, qb=DuckQB(freeSpace)
         )
         mipsolver.solve()
-        self.assertEqual(mipsolver.status, 2)
+        self.assertEqual(mipsolver.optimal, False)
         self.assertEqual(mipsolver.removeList, removeCand)
         self.assertEqual(len(mipsolver.downloadList), 0)
 
@@ -51,7 +51,7 @@ class TestMIP(unittest.TestCase):
             removeCand=removeCand, downloadCand=downloadCand, maxDownload=None, qb=DuckQB(freeSpace)
         )
         mipsolver.solve()
-        self.assertEqual(mipsolver.status, 0)
+        self.assertEqual(mipsolver.optimal, True)
         self.assertGreaterEqual(self.sizeSum(mipsolver.removeList) + freeSpace, self.sizeSum(mipsolver.downloadList))
         self.assertGreater(self.peerSum(mipsolver.downloadList), self.peerSum(mipsolver.removeList))
 
@@ -62,7 +62,7 @@ class TestMIP(unittest.TestCase):
             removeCand=removeCand, downloadCand=downloadCand, maxDownload=None, qb=DuckQB(freeSpace)
         )
         mipsolver.solve()
-        self.assertEqual(mipsolver.status, 0)
+        self.assertEqual(mipsolver.optimal, True)
         self.assertEqual(len(mipsolver.removeList), 0)
         self.assertEqual(len(mipsolver.downloadList), 0)
 
@@ -73,7 +73,7 @@ class TestMIP(unittest.TestCase):
             removeCand=removeCand, downloadCand=downloadCand, maxDownload=None, qb=DuckQB(freeSpace)
         )
         mipsolver.solve()
-        self.assertEqual(mipsolver.status, 0)
+        self.assertEqual(mipsolver.optimal, True)
         self.assertEqual(len(mipsolver.removeList), 0)
         self.assertEqual(len(mipsolver.downloadList), 0)
 
@@ -84,7 +84,7 @@ class TestMIP(unittest.TestCase):
             removeCand=removeCand, downloadCand=downloadCand, maxDownload=None, qb=DuckQB(freeSpace)
         )
         mipsolver.solve()
-        self.assertEqual(mipsolver.status, 0)
+        self.assertEqual(mipsolver.optimal, True)
         self.assertGreaterEqual(self.sizeSum(mipsolver.removeList) + freeSpace, self.sizeSum(mipsolver.downloadList))
         self.assertGreater(self.peerSum(mipsolver.downloadList), self.peerSum(mipsolver.removeList))
 
@@ -95,7 +95,7 @@ class TestMIP(unittest.TestCase):
             removeCand=removeCand, downloadCand=downloadCand, maxDownload=None, qb=DuckQB(freeSpace)
         )
         mipsolver.solve()
-        self.assertEqual(mipsolver.status, 0)
+        self.assertEqual(mipsolver.optimal, True)
         self.assertEqual(len(mipsolver.removeList), 0)
         self.assertGreater(len(mipsolver.downloadList), 0)
 
@@ -106,7 +106,7 @@ class TestMIP(unittest.TestCase):
             removeCand=removeCand, downloadCand=downloadCand, maxDownload=3, qb=DuckQB(freeSpace)
         )
         mipsolver.solve()
-        self.assertEqual(mipsolver.status, 0)
+        self.assertEqual(mipsolver.optimal, True)
         self.assertGreaterEqual(self.sizeSum(mipsolver.removeList) + freeSpace, self.sizeSum(mipsolver.downloadList))
         self.assertGreater(self.peerSum(mipsolver.downloadList), self.peerSum(mipsolver.removeList))
         self.assertEqual(len(mipsolver.downloadList), 3)

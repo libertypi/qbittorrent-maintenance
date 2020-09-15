@@ -382,12 +382,12 @@ class MIPSolver:
             constMax.SetCoefficient(v, 1)
             objective.SetCoefficient(v, t.peer)
 
-        self.status = solver.Solve()
-
-        if self.status == solver.OPTIMAL:
+        if solver.Solve() == solver.OPTIMAL:
+            self.optimal = True
             self.removeList = tuple(t for v, t in removePool if v.solution_value() == 1)
             self.downloadList = tuple(t for v, t in downloadPool if v.solution_value() == 1)
         else:
+            self.optimal = False
             self.removeList = self.removeCand if self.freeSpace < -self.removeCandSize else tuple()
             self.downloadList = tuple()
 
@@ -411,7 +411,7 @@ class MIPSolver:
         finalFreeSpace = self.freeSpace + removeSize - downloadSize
 
         print(self.sepSlim)
-        if self.status == self.solver.OPTIMAL:
+        if self.optimal:
             print(
                 "Problem solved in {} milliseconds, objective value: {}.".format(
                     self.solver.wall_time(), self.solver.Objective().Value()
