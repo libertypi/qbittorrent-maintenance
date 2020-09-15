@@ -17,7 +17,7 @@ class qBittorrent:
 
     Removable = namedtuple("Removable", ("hash", "size", "peer", "title"))
 
-    def __init__(self, host: str, seedDir: str, watchDir: str, speedThresh: tuple, spaceQuota: int, datafile: str):
+    def __init__(self, *, host: str, seedDir: str, watchDir: str, speedThresh: tuple, spaceQuota: int, datafile: str):
 
         self.api_baseurl = urljoin(host, "api/v2/")
         path = "sync/maindata"
@@ -40,7 +40,7 @@ class qBittorrent:
         self.data = self._load_data()
         self.upSpeed, self.dlSpeed = self.data.record(self)
 
-    def _request(self, path, **kwargs):
+    def _request(self, path: str, **kwargs):
         response = requests.get(urljoin(self.api_baseurl, path), **kwargs, timeout=7)
         response.raise_for_status()
         return response
@@ -230,7 +230,7 @@ class MTeam:
     domain = "https://pt.m-team.cc"
     Torrent = namedtuple("Torrent", ("tid", "size", "peer", "title", "link"))
 
-    def __init__(self, feeds: tuple, account: tuple, minPeer: int, qb: qBittorrent) -> None:
+    def __init__(self, *, feeds: tuple, account: tuple, minPeer: int, qb: qBittorrent) -> None:
         self.feeds = feeds
         self.loginPayload = {"username": account[0], "password": account[1]}
         self.newTorrentMinPeer = minPeer if isinstance(minPeer, int) else 0
@@ -279,7 +279,7 @@ class MTeam:
                 print("Fetching feed success, elapsed:", response.elapsed)
                 tr = next(soup)
             except StopIteration:
-                print("Unable to locate torrent table, css selector may be erroneous.")
+                print("Unable to locate torrent table, css selector broken?")
                 continue
             except Exception:
                 print("Fetching feed failed.")
@@ -318,7 +318,7 @@ class MTeam:
                 except Exception as e:
                     print("Parsing page error:", e)
 
-    def download(self, downloadList):
+    def download(self, downloadList: tuple):
         for t in downloadList:
             response = self._get(urljoin(self.domain, t.link))
             if response is not None and self.qb.add_torrent(f"{t.tid}.torrent", response.content):
@@ -332,8 +332,8 @@ class MTeam:
     def size_convert(string: str) -> int:
         """Convert human readable size to bytes.
 
+        Example: size_convert('15GB') -> 16106127360.
         Should be wrapped inside a try...except block.
-        Example: size_convert('15GB') -> 16106127360
         """
         m = re.search(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[TGMK]i?B)", string)
         return int(float(m["num"]) * byteUnit[m["unit"]])
@@ -346,33 +346,27 @@ class MIPSolver:
     Constraints:
         1, sum(downloadSize) <= freeSpace + sum(removedSize)
             --> sum(downloadSize) - sum(removedSize) <= freeSpace
-            When freeSpace < -sum(removedSize) < 0, this become impossible to satisfy.
-            So the second algorithm findMinSum will be used.
-        2, sum(downloadPeer) > sum(removedPeer)
-           --> 0 < sum(downloadPeer) - sum(removedPeer)
-            This constraint will be neutralized when freeSpace < 0, so old torrents can be
-            deleted without new complement.
-        3, The amount of downloads should be limited to a sane number, like 3.
+            When freeSpace + sum(removedSize) < 0, this become impossible to satisfy.
+            So the algorithm should delete all remove candidates to free up space.
+        2, The amount of downloads should be limited to a sane number, like 3.
 
     Objective:
         Maximize: sum(downloadPeer) - sum(removedPeer)
     """
 
-    def __init__(self, removeCand, downloadCand, maxDownload, qb: qBittorrent) -> None:
+    def __init__(self, *, removeCand, downloadCand, maxDownload, qb: qBittorrent) -> None:
         self.solver = pywraplp.Solver.CreateSolver("TorrentOptimizer", "CBC")
         self.removeCand = tuple(removeCand)
         self.downloadCand = tuple(downloadCand)
         self.maxDownload = maxDownload if isinstance(maxDownload, int) else self.solver.infinity()
         self.qb = qb
         self.freeSpace = qb.freeSpace
+        self.removeCandSize = sum(i.size for i in self.removeCand)
         self.sepSlim = "-" * 50
 
     def solve(self):
         solver = self.solver
-        infinity = solver.infinity()
-
-        constSize = solver.Constraint(-infinity, self.freeSpace)
-        constPeer = solver.Constraint(0 if self.freeSpace > 0 else -infinity, infinity)
+        constSize = solver.Constraint(-solver.infinity(), self.freeSpace)
         constMax = solver.Constraint(0, self.maxDownload)
         objective = solver.Objective()
         objective.SetMaximization()
@@ -382,11 +376,9 @@ class MIPSolver:
 
         for v, t in removePool:
             constSize.SetCoefficient(v, -t.size)
-            constPeer.SetCoefficient(v, -t.peer)
             objective.SetCoefficient(v, -t.peer)
         for v, t in downloadPool:
             constSize.SetCoefficient(v, t.size)
-            constPeer.SetCoefficient(v, t.peer)
             constMax.SetCoefficient(v, 1)
             objective.SetCoefficient(v, t.peer)
 
@@ -396,48 +388,19 @@ class MIPSolver:
             self.removeList = tuple(t for v, t in removePool if v.solution_value() == 1)
             self.downloadList = tuple(t for v, t in downloadPool if v.solution_value() == 1)
         else:
-            self.removeList = self.findMinSum(self.removeCand, -self.freeSpace) if self.freeSpace < 0 else tuple()
+            self.removeList = self.removeCand if self.freeSpace < -self.removeCandSize else tuple()
             self.downloadList = tuple()
 
-    @staticmethod
-    def findMinSum(torrents: tuple, targetSize: int):
-        """Find a minimum subset whose sum reaches the target size.
-
-        Input should be a list of named tuples with a "size" field.
-        Returns a new tuple of tuples.
-        If the maximum sum is lesser than the target, returns the original input.
-        """
-
-        def _innerLoop(parentKeys=0, parentSum=0, i=0):
-            nonlocal minKeys, minSum
-            for n in range(i, length):
-                currentSum = parentSum + nums[n]
-                if currentSum < minSum:
-                    currentKeys = parentKeys | masks[n]
-                    if currentSum < targetSize:
-                        _innerLoop(currentKeys, currentSum, n + 1)
-                        continue
-                    minKeys, minSum = currentKeys, currentSum
-                break
-
-        sTorrents = sorted(torrents, key=lambda i: i.size)
-        nums = tuple(i.size for i in sTorrents)
-        minSum = sum(nums)
-        if minSum > targetSize:
-            length = len(nums)
-            minKeys = 2 ** length - 1
-            masks = tuple(1 << i for i in range(length))
-            _innerLoop()
-            return tuple(i for n, i in enumerate(sTorrents) if minKeys & masks[n])
-        return torrents
-
     def prologue(self):
-        removeCandSize = sum(i.size for i in self.removeCand)
-        maxAvailSpace = self.freeSpace + removeCandSize
+        maxAvailSpace = self.freeSpace + self.removeCandSize
 
         print(self.sepSlim)
         print(f"Torrents fetched: {len(self.downloadCand)}. Maximum downloads: {self.maxDownload}.")
-        print(f"Remove candidates: {len(self.removeCand)}/{len(self.qb.torrents)}. Size: {humansize(removeCandSize)}.")
+        print(
+            "Remove candidates: {}/{}. Size: {}.".format(
+                len(self.removeCand), len(self.qb.torrents), humansize(self.removeCandSize)
+            )
+        )
         print(f"Disk free space: {humansize(self.freeSpace)}. Max avail space: {humansize(maxAvailSpace)}.")
         for v in self.removeCand:
             print(f"[{humansize(v.size):>11}|{v.peer:4d} peers] {v.title}")
@@ -472,6 +435,38 @@ class MIPSolver:
             for v in final:
                 print(f"[{humansize(v.size):>11}|{v.peer:4d} peers] {v.title}")
         print(self.sepSlim)
+
+    @staticmethod
+    def findMinSum(torrents: tuple, targetSize: int):
+        """Find a minimum subset whose sum reaches the target size.
+
+        Input should be a list of named tuples with a "size" field.
+        Returns a new tuple of tuples.
+        If the maximum sum is lesser than the target, returns the original input.
+        """
+
+        def _innerLoop(parentKeys=0, parentSum=0, i=0):
+            nonlocal minKeys, minSum
+            for n in range(i, length):
+                currentSum = parentSum + nums[n]
+                if currentSum < minSum:
+                    currentKeys = parentKeys | masks[n]
+                    if currentSum < targetSize:
+                        _innerLoop(currentKeys, currentSum, n + 1)
+                        continue
+                    minKeys, minSum = currentKeys, currentSum
+                break
+
+        sTorrents = sorted(torrents, key=lambda i: i.size)
+        nums = tuple(i.size for i in sTorrents)
+        minSum = sum(nums)
+        if minSum > targetSize:
+            length = len(nums)
+            minKeys = 2 ** length - 1
+            masks = tuple(1 << i for i in range(length))
+            _innerLoop()
+            return tuple(i for n, i in enumerate(sTorrents) if minKeys & masks[n])
+        return torrents
 
 
 class Log(list):
