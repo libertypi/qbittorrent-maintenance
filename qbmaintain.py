@@ -170,7 +170,7 @@ class Data:
         self.mteamHistory = set()
         self.init_session()
 
-    def init_session(self) -> requests.session:
+    def init_session(self):
         """Initialize a new requests session."""
         self.session = requests.session()
         self.session.headers.update(
