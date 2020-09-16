@@ -33,17 +33,6 @@ class TestMIP(unittest.TestCase):
             if len(set(i[0] for j in (removeCand, downloadCand) for i in j)) == 10:
                 return removeCand, downloadCand
 
-    def test_impossible(self):
-        removeCand, downloadCand = self.generate_cands(1, 1000, 1, 100, 1, 1000, 1, 100)
-        freeSpace = -self.sizeSum(removeCand) - 1
-        mipsolver = qbmaintain.MIPSolver(
-            removeCand=removeCand, downloadCand=downloadCand, maxDownload=None, qb=DuckQB(freeSpace)
-        )
-        mipsolver.solve()
-        self.assertEqual(mipsolver.optimal, False)
-        self.assertEqual(mipsolver.removeList, removeCand)
-        self.assertEqual(len(mipsolver.downloadList), 0)
-
     def test_peer_greater(self):
         removeCand, downloadCand = self.generate_cands(1, 100, 1, 100, 1, 100, 600, 1000)
         freeSpace = 100
@@ -89,7 +78,7 @@ class TestMIP(unittest.TestCase):
         self.assertGreater(self.peerSum(mipsolver.downloadList), self.peerSum(mipsolver.removeList))
 
     def test_freespace_enough(self):
-        removeCand, downloadCand = self.generate_cands(0, 100, 600, 1000, 600, 1000, 1, 100)
+        removeCand, downloadCand = self.generate_cands(1, 100, 600, 1000, 600, 1000, 1, 100)
         freeSpace = 1000
         mipsolver = qbmaintain.MIPSolver(
             removeCand=removeCand, downloadCand=downloadCand, maxDownload=None, qb=DuckQB(freeSpace)
@@ -98,6 +87,28 @@ class TestMIP(unittest.TestCase):
         self.assertEqual(mipsolver.optimal, True)
         self.assertEqual(len(mipsolver.removeList), 0)
         self.assertGreater(len(mipsolver.downloadList), 0)
+
+    def test_freespace_short(self):
+        removeCand, downloadCand = self.generate_cands(1, 1000, 1, 100, 1, 1000, 1, 100)
+        freeSpace = -1
+        mipsolver = qbmaintain.MIPSolver(
+            removeCand=removeCand, downloadCand=downloadCand, maxDownload=None, qb=DuckQB(freeSpace)
+        )
+        mipsolver.solve()
+        self.assertEqual(mipsolver.optimal, True)
+        self.assertGreater(self.sizeSum(mipsolver.removeList), 0)
+        self.assertGreater(self.sizeSum(mipsolver.removeList), self.sizeSum(mipsolver.downloadList))
+
+    def test_impossible(self):
+        removeCand, downloadCand = self.generate_cands(1, 1000, 1, 100, 1, 1000, 1, 100)
+        freeSpace = -self.sizeSum(removeCand) - 1
+        mipsolver = qbmaintain.MIPSolver(
+            removeCand=removeCand, downloadCand=downloadCand, maxDownload=None, qb=DuckQB(freeSpace)
+        )
+        mipsolver.solve()
+        self.assertEqual(mipsolver.optimal, False)
+        self.assertEqual(mipsolver.removeList, removeCand)
+        self.assertEqual(len(mipsolver.downloadList), 0)
 
     def test_max_item(self):
         removeCand, downloadCand = self.generate_cands(600, 1000, 1, 100, 1, 100, 600, 1000)

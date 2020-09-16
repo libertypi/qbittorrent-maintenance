@@ -272,9 +272,7 @@ class MTeam:
                 response = self._get(urljoin(self.domain, feed))
                 soup = (
                     tr.find_all("td", recursive=False)
-                    for tr in BeautifulSoup(response.content, "html.parser").select(
-                        "#form_torrent table.torrents > tr"
-                    )
+                    for tr in BeautifulSoup(response.content, "html.parser").select("#form_torrent table.torrents > tr")
                 )
                 print("Fetching feed success, elapsed:", response.elapsed)
                 tr = next(soup)
@@ -382,12 +380,12 @@ class MIPSolver:
             constMax.SetCoefficient(v, 1)
             objective.SetCoefficient(v, t.peer)
 
-        if solver.Solve() == solver.OPTIMAL:
-            self.optimal = True
+        self.optimal = solver.Solve() == solver.OPTIMAL
+
+        if self.optimal:
             self.removeList = tuple(t for v, t in removePool if v.solution_value() == 1)
             self.downloadList = tuple(t for v, t in downloadPool if v.solution_value() == 1)
         else:
-            self.optimal = False
             self.removeList = self.removeCand if self.freeSpace < -self.removeCandSize else tuple()
             self.downloadList = tuple()
 
