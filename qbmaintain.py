@@ -416,7 +416,7 @@ class MIPSolver:
                 )
             )
         else:
-            print(f"MIP solver cannot find an optimal solution, status: {self.status}.")
+            print("MIP solver cannot find an optimal solution.")
 
         print(f"Free space left after operation: {humansize(self.freeSpace)} ==> {humansize(finalFreeSpace)}.")
 
