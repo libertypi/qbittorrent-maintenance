@@ -33,7 +33,7 @@ class qBittorrent:
         except Exception:
             self.seedDir = self.watchDir = None
 
-        self.upSpeedThresh, self.dlSpeedThresh = (i * byteUnit["MiB"] for i in speedThresh)
+        self.upSpeedThresh, self.dlSpeedThresh = (int(i * byteUnit["MiB"]) for i in speedThresh)
         self.spaceQuota = spaceQuota * byteUnit["GiB"]
 
         self.datafile = datafile
@@ -216,10 +216,10 @@ class Data:
     def get_slows(self) -> pd.Index:
         """Discover the slowest torrents using jenks natural breaks method."""
         speeds = self.torrentFrame.last("D").resample("T").bfill().diff().mean()
-        try:
-            breaks = speeds.count().item() - 1
+        breaks = speeds.count().item() - 1
+        if breaks >= 2:
             breaks = jenks_breaks(speeds, nb_class=(4 if breaks >= 4 else breaks))[1]
-        except Exception:
+        else:
             breaks = speeds.mean()
         return speeds.loc[speeds <= breaks].index
 
@@ -404,7 +404,7 @@ class MIPSolver:
         )
         print(f"Disk free space: {humansize(self.freeSpace)}. Max avail space: {humansize(maxAvailSpace)}.")
         for v in self.removeCand:
-            print(f"[{humansize(v.size):>11}|{v.peer:4d} peers] {v.title}")
+            print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
 
         print(self.sepSlim)
         if self.optimal:
@@ -429,7 +429,7 @@ class MIPSolver:
                 )
             )
             for v in final:
-                print(f"[{humansize(v.size):>11}|{v.peer:4d} peers] {v.title}")
+                print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
         print(self.sepSlim)
 
     @staticmethod
@@ -502,9 +502,10 @@ def copy_backup(source, dest):
         print(f'Copying "{source}" to "{dest}" failed: {e}')
 
 
-def humansize(size, suffixes=("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB")):
+def humansize(size: int):
+    """Convert bytes to human readable sizes."""
     try:
-        for suffix in suffixes:
+        for suffix in ("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"):
             size /= 1024
             if size < 1024:
                 return "{:.2f} {}".format(size, suffix)
