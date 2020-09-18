@@ -358,7 +358,6 @@ class MIPSolver:
         self.removeCandSize = sum(i.size for i in self.removeCand)
         self.qb = qb
         self.freeSpace = qb.freeSpace
-        self.sepSlim = "-" * 50
 
         solver = self.solver = pywraplp.Solver.CreateSolver("TorrentOptimizer", "CBC")
         self.maxDownload = maxDownload if isinstance(maxDownload, int) else self.solver.infinity()
@@ -388,12 +387,13 @@ class MIPSolver:
             self.downloadList = tuple()
 
     def report(self):
+        sepSlim = "-" * 50
         maxAvailSpace = self.freeSpace + self.removeCandSize
         removeSize = sum(i.size for i in self.removeList)
         downloadSize = sum(i.size for i in self.downloadList)
         finalFreeSpace = self.freeSpace + removeSize - downloadSize
 
-        print(self.sepSlim)
+        print(sepSlim)
         print(f"Torrents fetched: {len(self.downloadCand)}. Maximum downloads: {self.maxDownload}.")
         print(
             "Remove candidates: {}/{}. Size: {}.".format(
@@ -404,7 +404,7 @@ class MIPSolver:
         for v in self.removeCand:
             print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
 
-        print(self.sepSlim)
+        print(sepSlim)
         if self.optimal:
             print(
                 "Problem solved in {} milliseconds, objective value: {}.".format(
@@ -420,7 +420,7 @@ class MIPSolver:
             ("Download", self.downloadList, self.downloadCand, downloadSize),
             ("Remove", self.removeList, self.removeCand, removeSize),
         ):
-            print(self.sepSlim)
+            print(sepSlim)
             print(
                 "{}: {}/{}. Total: {}, {} peers.".format(
                     title, len(final), len(cand), humansize(size), sum(i.peer for i in final)
@@ -428,7 +428,7 @@ class MIPSolver:
             )
             for v in final:
                 print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
-        print(self.sepSlim)
+        print(sepSlim)
 
     @staticmethod
     def findMinSum(torrents: tuple, targetSize: int):
