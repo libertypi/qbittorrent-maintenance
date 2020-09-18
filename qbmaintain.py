@@ -359,11 +359,9 @@ class MIPSolver:
         self.qb = qb
         self.freeSpace = qb.freeSpace
         self.sepSlim = "-" * 50
-        self.solver = pywraplp.Solver.CreateSolver("TorrentOptimizer", "CBC")
-        self.maxDownload = maxDownload if isinstance(maxDownload, int) else self.solver.infinity()
 
-    def solve(self):
-        solver = self.solver
+        solver = self.solver = pywraplp.Solver.CreateSolver("TorrentOptimizer", "CBC")
+        self.maxDownload = maxDownload if isinstance(maxDownload, int) else self.solver.infinity()
         constSize = solver.Constraint(-solver.infinity(), self.freeSpace)
         constMax = solver.Constraint(0, self.maxDownload)
         objective = solver.Objective()
@@ -555,7 +553,6 @@ def main():
             maxDownload=config.maxDownload,
             qb=qb,
         )
-        mipsolver.solve()
         mipsolver.report()
 
         qb.remove_torrents(mipsolver.removeList)
