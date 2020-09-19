@@ -310,7 +310,7 @@ class MTeam:
 
                     title = tr[colTitle].find("a", href=re_details, string=True)
                     title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
-                    size = self.size_convert(tr[colSize].get_text())
+                    size = machinesize(tr[colSize].get_text())
 
                     yield self.Torrent(tid=tid, size=size, peer=peer, title=title, link=link)
                 except Exception as e:
@@ -325,16 +325,6 @@ class MTeam:
                 log.record("Download", t.size, t.title)
             else:
                 print("Failed:", t.title)
-
-    @staticmethod
-    def size_convert(string: str) -> int:
-        """Convert human readable size to bytes.
-
-        Example: size_convert('15GB') -> 16106127360.
-        Should be wrapped inside a try...except block.
-        """
-        m = re.search(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[TGMK]i?B)", string)
-        return int(float(m["num"]) * byteUnit[m["unit"]])
 
 
 class MIPSolver:
@@ -510,6 +500,16 @@ def humansize(size: int):
     except Exception:
         pass
     return "---"
+
+
+def machinesize(string: str):
+    """Convert human readable size to bytes.
+
+    Example: machinesize('15GB') -> 16106127360.
+    Should be wrapped inside a try...except block.
+    """
+    m = re.search(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[TGMK]i?B)", string)
+    return int(float(m["num"]) * byteUnit[m["unit"]])
 
 
 def main():
