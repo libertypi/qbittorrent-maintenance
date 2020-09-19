@@ -190,11 +190,9 @@ class Data:
     def record(self, qb: qBittorrent):
         """Record qBittorrent traffic data to pandas DataFrame. Returns the last hour avg UL/DL speeds."""
 
-        now = pd.Timestamp.now()
-        qBittorrentRow = pd.DataFrame(
-            {"upload": qb.state["alltime_ul"], "download": qb.state["alltime_dl"]}, index=[now]
-        )
-        torrentRow = pd.DataFrame({k: v["uploaded"] for k, v in qb.torrents.items()}, index=[now])
+        now = (pd.Timestamp.now(),)
+        qBittorrentRow = pd.DataFrame({"upload": qb.state["alltime_ul"], "download": qb.state["alltime_dl"]}, index=now)
+        torrentRow = pd.DataFrame({k: v["uploaded"] for k, v in qb.torrents.items()}, index=now)
 
         try:
             self.qBittorrentFrame = self.qBittorrentFrame.last("7D").append(qBittorrentRow)
