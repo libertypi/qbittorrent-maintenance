@@ -34,7 +34,7 @@ class qBittorrent:
             self.seedDir = self.watchDir = None
 
         self.upSpeedThresh, self.dlSpeedThresh = (int(i * byteUnit["MiB"]) for i in speedThresh)
-        self.spaceQuota = spaceQuota * byteUnit["GiB"]
+        self.spaceQuota = int(spaceQuota * byteUnit["GiB"])
 
         self.datafile = datafile
         self.data = self._load_data()
@@ -156,8 +156,7 @@ class qBittorrent:
         try:
             with open(self.datafile, "wb") as f:
                 pickle.dump(self.data, f)
-            if backupDir:
-                copy_backup(self.datafile, backupDir)
+            copy_backup(self.datafile, backupDir)
         except Exception as e:
             log.record("Error", None, f"Writing data to disk failed: {e}")
             print("Writing data to disk failed:", e)
@@ -230,7 +229,7 @@ class MTeam:
     domain = "https://pt.m-team.cc"
     Torrent = namedtuple("Torrent", ("tid", "size", "peer", "title", "link"))
 
-    def __init__(self, *, feeds: tuple, account: tuple, minPeer: int, qb: qBittorrent) -> None:
+    def __init__(self, *, feeds: tuple, account: tuple, minPeer: int, qb: qBittorrent):
         self.feeds = feeds
         self.loginPayload = {"username": account[0], "password": account[1]}
         self.newTorrentMinPeer = minPeer if isinstance(minPeer, int) else 0
@@ -342,7 +341,7 @@ class MIPSolver:
         Maximize: sum(downloadPeer) - sum(removedPeer)
     """
 
-    def __init__(self, *, removeCand, downloadCand, maxDownload, qb: qBittorrent) -> None:
+    def __init__(self, *, removeCand, downloadCand, maxDownload, qb: qBittorrent):
         self.removeCand = tuple(removeCand)
         self.downloadCand = tuple(downloadCand)
         self.removeCandSize = sum(i.size for i in self.removeCand)
@@ -420,38 +419,6 @@ class MIPSolver:
                 print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
         print(sepSlim)
 
-    @staticmethod
-    def findMinSum(torrents: tuple, targetSize: int):
-        """Find a minimum subset whose sum reaches the target size.
-
-        Input should be a list of named tuples with a "size" field.
-        Returns a new tuple of tuples.
-        If the maximum sum is lesser than the target, returns the original input.
-        """
-
-        def _innerLoop(parentKeys=0, parentSum=0, i=0):
-            nonlocal minKeys, minSum
-            for n in range(i, length):
-                currentSum = parentSum + nums[n]
-                if currentSum < minSum:
-                    currentKeys = parentKeys | masks[n]
-                    if currentSum < targetSize:
-                        _innerLoop(currentKeys, currentSum, n + 1)
-                        continue
-                    minKeys, minSum = currentKeys, currentSum
-                break
-
-        sTorrents = sorted(torrents, key=lambda i: i.size)
-        nums = tuple(i.size for i in sTorrents)
-        minSum = sum(nums)
-        if minSum > targetSize:
-            length = len(nums)
-            minKeys = 2 ** length - 1
-            masks = tuple(1 << i for i in range(length))
-            _innerLoop()
-            return tuple(i for n, i in enumerate(sTorrents) if minKeys & masks[n])
-        return torrents
-
 
 class Log(list):
     def record(self, action, size, name):
@@ -479,15 +446,15 @@ class Log(list):
                 f.writelines(self)
                 if oldLog:
                     f.writelines(oldLog)
-            if backupDir:
-                copy_backup(logfile, backupDir)
+            copy_backup(logfile, backupDir)
 
 
 def copy_backup(source, dest):
     try:
         shutil.copy(source, dest)
     except Exception as e:
-        print(f'Copying "{source}" to "{dest}" failed: {e}')
+        if dest is not None:
+            print(f'Copying "{source}" to "{dest}" failed: {e}')
 
 
 def humansize(size: int):
