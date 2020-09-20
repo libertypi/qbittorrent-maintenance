@@ -238,7 +238,7 @@ class MTeam:
 
         try:
             a = minPeer[0] / byteUnit["GiB"]
-            b = minPeer[1] + 0
+            b = minPeer[1]
             self.minPeer = minPeer
         except Exception:
             a = b = 0
