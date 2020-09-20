@@ -227,15 +227,23 @@ class MTeam:
     domain = "https://pt.m-team.cc"
     Torrent = namedtuple("Torrent", ("tid", "size", "peer", "title", "link"))
 
-    def __init__(self, *, feeds: tuple, account: tuple, minPeer: int, qb: qBittorrent):
+    def __init__(self, *, feeds: tuple, account: tuple, minPeer: tuple, qb: qBittorrent):
         self.feeds = feeds
         self.loginPayload = {"username": account[0], "password": account[1]}
-        self.newTorrentMinPeer = minPeer if isinstance(minPeer, int) else 0
         self.qb = qb
         self.session = qb.data.session
         self.history = qb.data.mteamHistory
         self.loginPage = urljoin(self.domain, "takelogin.php")
         self.loginReferer = {"referer": urljoin(self.domain, "login.php")}
+
+        try:
+            a = minPeer[0] / byteUnit["GiB"]
+            b = minPeer[1] + 0
+            self.minPeer = minPeer
+        except Exception:
+            a = b = 0
+            self.minPeer = (a, b)
+        self.bellowMinPeer = lambda size, peer: peer < a * size + b
 
     def _get(self, url: str):
         for i in range(3):
@@ -258,11 +266,13 @@ class MTeam:
         re_details = re.compile(r"\bdetails\.php\?")
         re_timelimit = re.compile(r"限時：[^日]*$")
         re_nondigit = re.compile(r"[^0-9]+")
+        re_size = re.compile(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[TGMK]i?B)")
         re_tid = re.compile(r"\bid=(?P<tid>[0-9]+)")
-        newTorrentMinPeer = self.newTorrentMinPeer
         cols = {}
 
-        print(f"Connecting to M-Team... Feeds: {len(self.feeds)}, minimum peer requirement: {newTorrentMinPeer}")
+        print(
+            f"Connecting to M-Team... Feeds: {len(self.feeds)}, minPeer factor: a={self.minPeer[0]}, b={self.minPeer[1]}."
+        )
 
         for feed in self.feeds:
             try:
@@ -294,8 +304,11 @@ class MTeam:
             for tr in soup:
                 try:
                     peer = int(re_nondigit.sub("", tr[colDown].get_text()))
-                    if peer < newTorrentMinPeer:
+                    size = re_size.search(tr[colSize].get_text())
+                    size = int(float(size["num"]) * byteUnit[size["unit"]])
+                    if self.bellowMinPeer(size, peer):
                         continue
+
                     link = tr[colTitle].find("a", href=re_download)["href"]
                     tid = re_tid.search(link)["tid"]
                     if (
@@ -307,7 +320,6 @@ class MTeam:
 
                     title = tr[colTitle].find("a", href=re_details, string=True)
                     title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
-                    size = machinesize(tr[colSize].get_text())
 
                     yield self.Torrent(tid=tid, size=size, peer=peer, title=title, link=link)
                 except Exception as e:
@@ -358,7 +370,7 @@ class MIPSolver:
 
         for v, t in removePool:
             constSize.SetCoefficient(v, -t.size)
-            objective.SetCoefficient(v, -t.peer)
+            objective.SetCoefficient(v, -0.5 * t.peer)
         for v, t in downloadPool:
             constSize.SetCoefficient(v, t.size)
             constMax.SetCoefficient(v, 1)
@@ -465,16 +477,6 @@ def humansize(size: int):
     except Exception:
         pass
     return "---"
-
-
-def machinesize(string: str):
-    """Convert human readable size to bytes.
-
-    Example: machinesize('15GB') -> 16106127360.
-    Should be wrapped inside a try...except block.
-    """
-    m = re.search(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[TGMK]i?B)", string)
-    return int(float(m["num"]) * byteUnit[m["unit"]])
 
 
 def main():
