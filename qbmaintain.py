@@ -235,7 +235,6 @@ class MTeam:
         self.history = qb.data.mteamHistory
         self.loginPage = urljoin(self.domain, "takelogin.php")
         self.loginReferer = {"referer": urljoin(self.domain, "login.php")}
-
         try:
             a = minPeer[0] / byteUnit["GiB"]
             b = minPeer[1]
@@ -271,7 +270,7 @@ class MTeam:
         cols = {}
 
         print(
-            f"Connecting to M-Team... Feeds: {len(self.feeds)}, minPeer factor: a={self.minPeer[0]}, b={self.minPeer[1]}."
+            f"Connecting to M-Team... Feeds: {len(self.feeds)}. Peer thresh factors: a={self.minPeer[0]}, b={self.minPeer[1]}."
         )
 
         for feed in self.feeds:
@@ -345,13 +344,12 @@ class MIPSolver:
             --> sum(downloadSize) - sum(removedSize) <= freeSpace
             When freeSpace + sum(removedSize) < 0, this become impossible to satisfy.
             So the algorithm should delete all remove candidates to free up space.
-        2, The amount of downloads should be limited to a sane number, like 3.
 
     Objective:
         Maximize: sum(downloadPeer) - sum(removedPeer)
     """
 
-    def __init__(self, *, removeCand, downloadCand, maxDownload, qb: qBittorrent):
+    def __init__(self, *, removeCand, downloadCand, qb: qBittorrent):
         self.removeCand = tuple(removeCand)
         self.downloadCand = tuple(downloadCand)
         self.removeCandSize = sum(i.size for i in self.removeCand)
@@ -359,9 +357,7 @@ class MIPSolver:
         self.freeSpace = qb.freeSpace
 
         solver = self.solver = pywraplp.Solver.CreateSolver("TorrentOptimizer", "CBC")
-        self.maxDownload = maxDownload if isinstance(maxDownload, int) else self.solver.infinity()
         constSize = solver.Constraint(-solver.infinity(), self.freeSpace)
-        constMax = solver.Constraint(0, self.maxDownload)
         objective = solver.Objective()
         objective.SetMaximization()
 
@@ -373,7 +369,6 @@ class MIPSolver:
             objective.SetCoefficient(v, -0.5 * t.peer)
         for v, t in downloadPool:
             constSize.SetCoefficient(v, t.size)
-            constMax.SetCoefficient(v, 1)
             objective.SetCoefficient(v, t.peer)
 
         self.optimal = solver.Solve() == solver.OPTIMAL
@@ -393,7 +388,7 @@ class MIPSolver:
         finalFreeSpace = self.freeSpace + removeSize - downloadSize
 
         print(sepSlim)
-        print(f"Torrents fetched: {len(self.downloadCand)}. Maximum downloads: {self.maxDownload}.")
+        print(f"Download candidates: {len(self.downloadCand)}.")
         print(
             "Remove candidates: {}/{}. Size: {}.".format(
                 len(self.removeCand), len(self.qb.torrents), humansize(self.removeCandSize)
@@ -517,7 +512,6 @@ def main():
         mipsolver = MIPSolver(
             removeCand=qb.get_remove_cands(),
             downloadCand=mteam.fetch(),
-            maxDownload=config.maxDownload,
             qb=qb,
         )
         mipsolver.report()
