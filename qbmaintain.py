@@ -12,6 +12,8 @@ from bs4 import BeautifulSoup
 from jenkspy import jenks_breaks
 from ortools.linear_solver import pywraplp
 
+byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGTP"), (1024 ** s for s in range(1, 6))) for u in us}
+
 
 class qBittorrent:
 
@@ -244,10 +246,8 @@ class MTeam:
         try:
             a = minPeer[0] / byteUnit["GiB"]
             b = minPeer[1]
-            self.minPeer = minPeer
         except Exception:
             a = b = 0
-            self.minPeer = (a, b)
         self.bellowMinPeer = lambda size, peer: peer < a * size + b
 
     def _get(self, url: str):
@@ -271,13 +271,11 @@ class MTeam:
         re_details = re.compile(r"\bdetails\.php\?")
         re_timelimit = re.compile(r"限時：[^日]*$")
         re_nondigit = re.compile(r"[^0-9]+")
-        re_size = re.compile(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[TGMK]i?B)")
+        re_size = re.compile(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)")
         re_tid = re.compile(r"\bid=(?P<tid>[0-9]+)")
         cols = {}
 
-        print(
-            f"Connecting to M-Team... Feeds: {len(self.feeds)}. Peer thresh factors: a={self.minPeer[0]}, b={self.minPeer[1]}."
-        )
+        print(f"Connecting to M-Team... Feeds: {len(self.feeds)}.")
 
         for feed in self.feeds:
             try:
@@ -530,7 +528,6 @@ def main():
     log.write(logfile, backupDir=config.backupDir)
 
 
-byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGT"), (1024 ** s for s in range(1, 5))) for u in us}
 log = Log()
 debug = False
 
