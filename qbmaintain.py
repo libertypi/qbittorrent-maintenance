@@ -222,7 +222,13 @@ class Data:
 
 
 class MTeam:
-    """An optimized MTeam downloader."""
+    """An optimized MTeam downloader.
+
+    The per torrent minimum peer requirement subjects to:
+        peer = a * size(GiB) + b
+
+    Where (a, b) is defined in config file and passed through parameter "minPeer".
+    """
 
     domain = "https://pt.m-team.cc"
     Torrent = namedtuple("Torrent", ("tid", "size", "peer", "title", "link"))
