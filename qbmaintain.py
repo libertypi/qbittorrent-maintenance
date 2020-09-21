@@ -26,6 +26,7 @@ class qBittorrent:
         maindata = self._request(path).json()
         self.state = maindata["server_state"]
         self.torrents = maindata["torrents"]
+        self.realSpace = self.state["free_space_on_disk"]
         if self.state["connection_status"] not in ("connected", "firewalled"):
             raise RuntimeError("qBittorrent is not connected to the internet.")
 
@@ -69,10 +70,11 @@ class qBittorrent:
         except Exception:
             return
 
+        refreshSpace = False
+        re_ext = re.compile(r"\.!qB$")
         names = set(i["name"] for i in self.torrents.values())
         if watchDir[0] == self.seedDir:
             names.add(watchDir[1])
-        re_ext = re.compile(r"\.!qB$")
 
         with os.scandir(self.seedDir) as it:
             for entry in it:
@@ -84,19 +86,15 @@ class qBittorrent:
                                 shutil.rmtree(entry.path)
                             else:
                                 os.remove(entry.path)
+                        refreshSpace = True
                         log.record("Cleanup", None, entry.name)
                     except Exception as e:
                         print("Deletion Failed:", e)
-
-    def _init_freeSpace(self):
-        try:
-            realSpace = shutil.disk_usage(self.seedDir).free
-        except Exception:
-            realSpace = self.state["free_space_on_disk"]
-        self.freeSpace = realSpace - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
+        if refreshSpace:
+            self.realSpace = shutil.disk_usage(self.seedDir).free
 
     def need_action(self) -> bool:
-        self._init_freeSpace()
+        self.freeSpace = self.realSpace - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
         print(
             "qBittorrent average speed last hour: UL: {}/s, DL: {}/s.".format(
                 humansize(self.upSpeed), humansize(self.dlSpeed)
@@ -215,10 +213,10 @@ class Data:
     def get_slows(self) -> pd.Index:
         """Discover the slowest torrents using jenks natural breaks method."""
         speeds = self.torrentFrame.last("D").resample("T").bfill().diff().mean()
-        breaks = speeds.count().item() - 1
-        if breaks >= 2:
+        try:
+            breaks = speeds.count().item() - 1
             breaks = jenks_breaks(speeds, nb_class=(4 if breaks >= 4 else breaks))[1]
-        else:
+        except Exception:
             breaks = speeds.mean()
         return speeds.loc[speeds <= breaks].index
 
