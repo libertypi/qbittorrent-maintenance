@@ -98,11 +98,7 @@ class qBittorrent:
 
     def need_action(self) -> bool:
         self._init_freeSpace()
-        print(
-            "qBittorrent average speed last hour: UL: {}/s, DL: {}/s.".format(
-                humansize(self.upSpeed), humansize(self.dlSpeed)
-            )
-        )
+        print(f"qBittorrent average speed last hour: UL: {humansize(self.upSpeed)}/s, DL: {humansize(self.dlSpeed)}/s.")
         return (
             0 <= self.upSpeed < self.upSpeedThresh
             and 0 <= self.dlSpeed < self.dlSpeedThresh
@@ -392,9 +388,13 @@ class MIPSolver:
         finalFreeSpace = self.freeSpace + removeSize - downloadSize
 
         print(sepSlim)
-        print(f"Download candidates: {len(self.downloadCand)}.")
         print(
-            "Remove candidates: {}/{}. Size: {}.".format(
+            "Download candidates: {}. Total: {}.".format(
+                len(self.downloadCand), humansize(sum(i.size for i in self.downloadCand))
+            )
+        )
+        print(
+            "Remove candidates: {}/{}. Total: {}.".format(
                 len(self.removeCand), len(self.qb.torrents), humansize(self.removeCandSize)
             )
         )
@@ -412,7 +412,7 @@ class MIPSolver:
         else:
             print("MIP solver cannot find an optimal solution.")
 
-        print(f"Free space left after operation: {humansize(self.freeSpace)} ==> {humansize(finalFreeSpace)}.")
+        print(f"Free space left after operation: {humansize(self.freeSpace)} => {humansize(finalFreeSpace)}.")
 
         for title, final, cand, size in (
             ("Download", self.downloadList, self.downloadCand, downloadSize),
@@ -439,11 +439,11 @@ class Log(list):
 
         sep = "-" * 80
         header = "{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", sep)
-        self.reverse()
+        content = reversed(self)
 
         if debug:
             print(sep)
-            print(header, *self, sep="", end="")
+            print(header, *content, sep="", end="")
         else:
             try:
                 with open(logfile, mode="r", encoding="utf-8") as f:
@@ -452,7 +452,7 @@ class Log(list):
                 oldLog = None
             with open(logfile, mode="w", encoding="utf-8") as f:
                 f.write(header)
-                f.writelines(self)
+                f.writelines(content)
                 if oldLog:
                     f.writelines(oldLog)
             copy_backup(logfile, backupDir)
