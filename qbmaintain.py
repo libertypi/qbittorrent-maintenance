@@ -26,7 +26,6 @@ class qBittorrent:
         maindata = self._request(path).json()
         self.state = maindata["server_state"]
         self.torrents = maindata["torrents"]
-        self.realSpace = self.state["free_space_on_disk"]
         if self.state["connection_status"] not in ("connected", "firewalled"):
             raise RuntimeError("qBittorrent is not connected to the internet.")
 
@@ -70,7 +69,6 @@ class qBittorrent:
         except Exception:
             return
 
-        refreshSpace = False
         re_ext = re.compile(r"\.!qB$")
         names = set(i["name"] for i in self.torrents.values())
         if watchDir[0] == self.seedDir:
@@ -86,15 +84,20 @@ class qBittorrent:
                                 shutil.rmtree(entry.path)
                             else:
                                 os.remove(entry.path)
-                        refreshSpace = True
                         log.record("Cleanup", None, entry.name)
                     except Exception as e:
                         print("Deletion Failed:", e)
-        if refreshSpace:
-            self.realSpace = shutil.disk_usage(self.seedDir).free
+
+    def _init_freeSpace(self):
+        realSpace = self.state["free_space_on_disk"]
+        try:
+            realSpace = max(realSpace, shutil.disk_usage(self.seedDir).free)
+        except Exception:
+            pass
+        self.freeSpace = realSpace - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
 
     def need_action(self) -> bool:
-        self.freeSpace = self.realSpace - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
+        self._init_freeSpace()
         print(
             "qBittorrent average speed last hour: UL: {}/s, DL: {}/s.".format(
                 humansize(self.upSpeed), humansize(self.dlSpeed)
@@ -469,8 +472,8 @@ def humansize(size: int):
     try:
         for suffix in ("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"):
             size /= 1024
-            if size < 1024:
-                return "{:.2f} {}".format(size, suffix)
+            if -1024 < size < 1024:
+                return f"{size:.2f} {suffix}"
     except Exception:
         pass
     return "---"
