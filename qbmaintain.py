@@ -41,6 +41,7 @@ class qBittorrent:
         self.datafile = datafile
         self.data = self._load_data()
         self.upSpeed, self.dlSpeed = self.data.record(self)
+        print(f"qBittorrent average speed last hour: UL: {humansize(self.upSpeed)}/s, DL: {humansize(self.dlSpeed)}/s.")
 
     def _request(self, path: str, **kwargs):
         response = requests.get(urljoin(self.api_baseurl, path), **kwargs, timeout=7)
@@ -88,7 +89,7 @@ class qBittorrent:
                     except Exception as e:
                         print("Deletion Failed:", e)
 
-    def _init_freeSpace(self):
+    def need_action(self) -> bool:
         realSpace = self.state["free_space_on_disk"]
         try:
             realSpace = max(realSpace, shutil.disk_usage(self.seedDir).free)
@@ -96,9 +97,6 @@ class qBittorrent:
             pass
         self.freeSpace = realSpace - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
 
-    def need_action(self) -> bool:
-        self._init_freeSpace()
-        print(f"qBittorrent average speed last hour: UL: {humansize(self.upSpeed)}/s, DL: {humansize(self.dlSpeed)}/s.")
         return (
             0 <= self.upSpeed < self.upSpeedThresh
             and 0 <= self.dlSpeed < self.dlSpeedThresh
