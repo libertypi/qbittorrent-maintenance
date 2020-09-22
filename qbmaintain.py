@@ -65,16 +65,10 @@ class qBittorrent:
         return data
 
     def clean_seedDir(self):
-        try:
-            watchDir = os.path.split(self.watchDir)
-        except Exception:
+        if self.seedDir is None:
             return
-
         re_ext = re.compile(r"\.!qB$")
-        names = set(i["name"] for i in self.torrents.values())
-        if watchDir[0] == self.seedDir:
-            names.add(watchDir[1])
-
+        names = frozenset(i["name"] for i in self.torrents.values())
         with os.scandir(self.seedDir) as it:
             for entry in it:
                 if re_ext.sub("", entry.name) not in names:
