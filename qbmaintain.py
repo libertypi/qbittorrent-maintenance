@@ -283,8 +283,8 @@ class MTeam:
 
             for i, td in enumerate(tr):
                 title = td.find(title=True)
-                title = title["title"] if title else td.get_text()
-                cols[title.strip()] = i
+                title = title["title"] if title else td.get_text(strip=True)
+                cols[title] = i
 
             colTitle = cols.get("標題", 1)
             colSize = cols.get("大小", 4)
