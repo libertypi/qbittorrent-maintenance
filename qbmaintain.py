@@ -32,7 +32,9 @@ class qBittorrent:
         try:
             self.seedDir = os.path.abspath(seedDir)
             self.watchDir = os.path.abspath(watchDir)
-        except Exception:
+        except TypeError:
+            if not debug:
+                raise ValueError("seedDir and watchDir were not set properly.")
             self.seedDir = self.watchDir = None
 
         self.upSpeedThresh, self.dlSpeedThresh = (int(i * byteUnit["MiB"]) for i in speedThresh)
@@ -53,13 +55,13 @@ class qBittorrent:
         try:
             with open(self.datafile, mode="rb") as f:
                 data = pickle.load(f)
-            data.integrity_test()
-        except Exception as e:
+            assert data.integrity_test(), "Intergrity test failed."
+        except (OSError, AttributeError, AssertionError) as e:
             print(f"Loading data from '{self.datafile}' failed: {e}")
             if not debug:
                 try:
                     os.rename(self.datafile, f"{self.datafile}_{pd.Timestamp.now().strftime('%y%m%d_%H%M%S')}")
-                except Exception:
+                except OSError:
                     pass
             data = Data()
         return data
@@ -80,14 +82,14 @@ class qBittorrent:
                             else:
                                 os.remove(entry.path)
                         log.record("Cleanup", None, entry.name)
-                    except Exception as e:
+                    except OSError as e:
                         print("Deletion Failed:", e)
 
     def need_action(self) -> bool:
         realSpace = self.state["free_space_on_disk"]
         try:
             realSpace = max(realSpace, shutil.disk_usage(self.seedDir).free)
-        except Exception:
+        except TypeError:
             pass
         self.freeSpace = realSpace - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
 
@@ -120,12 +122,12 @@ class qBittorrent:
                 path = os.path.join(self.watchDir, filename)
                 with open(path, "wb") as f:
                     f.write(content)
-            except Exception as e:
+            except OSError as e:
                 try:
                     if not os.path.exists(self.watchDir):
                         os.mkdir(self.watchDir)
                         return self.add_torrent(filename, content)
-                except Exception:
+                except OSError:
                     pass
                 log.record("Error", None, f"Saving '{filename}' to '{self.watchDir}' failed: {e}")
                 print("Saving failed:", e)
@@ -148,7 +150,7 @@ class qBittorrent:
             with open(self.datafile, "wb") as f:
                 pickle.dump(self.data, f)
             copy_backup(self.datafile, backupDir)
-        except Exception as e:
+        except OSError as e:
             log.record("Error", None, f"Writing data to disk failed: {e}")
             print("Writing data to disk failed:", e)
 
@@ -169,14 +171,15 @@ class Data:
         return self.session
 
     def integrity_test(self):
-        attrs = (
-            (self.qBittorrentFrame, pd.DataFrame),
-            (self.torrentFrame, pd.DataFrame),
-            (self.mteamHistory, set),
-            (self.session, requests.Session),
+        return all(
+            isinstance(x, y)
+            for x, y in (
+                (self.qBittorrentFrame, pd.DataFrame),
+                (self.torrentFrame, pd.DataFrame),
+                (self.mteamHistory, set),
+                (self.session, requests.Session),
+            )
         )
-        if not all(isinstance(x, y) for x, y in attrs):
-            raise Exception("Intergrity test failed.")
 
     def record(self, qb: qBittorrent):
         """Record qBittorrent traffic data to pandas DataFrame. Returns the last hour avg UL/DL speeds."""
@@ -187,7 +190,7 @@ class Data:
 
         try:
             self.qBittorrentFrame = self.qBittorrentFrame.last("7D").append(qBittorrentRow)
-        except Exception:
+        except (TypeError, AttributeError):
             self.qBittorrentFrame = qBittorrentRow
         try:
             difference = self.torrentFrame.columns.difference(torrentRow.columns)
@@ -195,7 +198,7 @@ class Data:
                 self.torrentFrame.drop(columns=difference, inplace=True, errors="ignore")
                 self.torrentFrame.dropna(how="all", inplace=True)
             self.torrentFrame = self.torrentFrame.append(torrentRow)
-        except Exception:
+        except AttributeError:
             self.torrentFrame = torrentRow
 
         speeds = self.qBittorrentFrame.last("H").resample("T").bfill().diff().mean().floordiv(60)
@@ -234,7 +237,7 @@ class MTeam:
         try:
             a = minPeer[0] / byteUnit["GiB"]
             b = minPeer[1]
-        except Exception:
+        except (IndexError, TypeError):
             a = b = 0
         self.bellowMinPeer = lambda size, peer: peer < a * size + b
 
@@ -440,7 +443,7 @@ class Log(list):
             try:
                 with open(logfile, mode="r", encoding="utf-8") as f:
                     oldLog = f.readlines()[2:]
-            except Exception:
+            except (OSError, IndexError):
                 oldLog = None
             with open(logfile, mode="w", encoding="utf-8") as f:
                 f.write(header)
@@ -453,9 +456,10 @@ class Log(list):
 def copy_backup(source, dest):
     try:
         shutil.copy(source, dest)
-    except Exception as e:
-        if dest is not None:
-            print(f'Copying "{source}" to "{dest}" failed: {e}')
+    except TypeError:
+        pass
+    except OSError as e:
+        print(f'Copying "{source}" to "{dest}" failed: {e}')
 
 
 def humansize(size: int):
@@ -465,7 +469,7 @@ def humansize(size: int):
             size /= 1024
             if -1024 < size < 1024:
                 return f"{size:.2f} {suffix}"
-    except Exception:
+    except TypeError:
         pass
     return "---"
 
