@@ -32,9 +32,9 @@ class qBittorrent:
         try:
             self.seedDir = os.path.abspath(seedDir)
             self.watchDir = os.path.abspath(watchDir)
-        except TypeError:
+        except TypeError as e:
             if not debug:
-                raise ValueError("seedDir and watchDir were not set properly.")
+                raise ValueError("seedDir and watchDir were not set properly.") from e
             self.seedDir = self.watchDir = None
 
         self.upSpeedThresh, self.dlSpeedThresh = (int(i * byteUnit["MiB"]) for i in speedThresh)
