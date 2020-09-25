@@ -56,7 +56,7 @@ class qBittorrent:
             with open(self.datafile, mode="rb") as f:
                 data = pickle.load(f)
             assert data.integrity_test(), "Intergrity test failed."
-        except (OSError, AttributeError, AssertionError) as e:
+        except Exception as e:
             print(f"Loading data from '{self.datafile}' failed: {e}")
             if not debug:
                 try:
@@ -143,14 +143,14 @@ class qBittorrent:
                 payload = {"hashes": "all"}
                 self._request(path, params=payload)
 
-    def dump_data(self, backupDir=None):
+    def dump_data(self, backupDir: str):
         if debug:
             return
         try:
             with open(self.datafile, "wb") as f:
                 pickle.dump(self.data, f)
             copy_backup(self.datafile, backupDir)
-        except OSError as e:
+        except (OSError, pickle.PickleError) as e:
             log.record("Error", None, f"Writing data to disk failed: {e}")
             print("Writing data to disk failed:", e)
 
@@ -198,7 +198,7 @@ class Data:
                 self.torrentFrame.drop(columns=difference, inplace=True, errors="ignore")
                 self.torrentFrame.dropna(how="all", inplace=True)
             self.torrentFrame = self.torrentFrame.append(torrentRow)
-        except AttributeError:
+        except (TypeError, AttributeError):
             self.torrentFrame = torrentRow
 
         speeds = self.qBittorrentFrame.last("H").resample("T").bfill().diff().mean().floordiv(60)
@@ -428,7 +428,7 @@ class Log(list):
     def record(self, action, size, name):
         self.append("{:20}{:12}{:14}{}\n".format(pd.Timestamp.now().strftime("%D %T"), action, humansize(size), name))
 
-    def write(self, logfile: str, backupDir=None):
+    def write(self, logfile: str, backupDir: str):
         if not self:
             return
 
@@ -453,7 +453,7 @@ class Log(list):
             copy_backup(logfile, backupDir)
 
 
-def copy_backup(source, dest):
+def copy_backup(source: str, dest: str):
     try:
         shutil.copy(source, dest)
     except TypeError:
