@@ -354,7 +354,6 @@ class MIPSolver:
         solver = self.solver = pywraplp.Solver.CreateSolver("TorrentOptimizer", "CBC")
         constSize = solver.Constraint(-solver.infinity(), self.freeSpace)
         objective = solver.Objective()
-        objective.SetMaximization()
 
         removePool = tuple((solver.BoolVar(t.hash), t) for t in self.removeCand)
         downloadPool = tuple((solver.BoolVar(t.tid), t) for t in self.downloadCand)
@@ -366,6 +365,7 @@ class MIPSolver:
             constSize.SetCoefficient(v, t.size)
             objective.SetCoefficient(v, t.peer)
 
+        objective.SetMaximization()
         self.optimal = solver.Solve() == solver.OPTIMAL
 
         if self.optimal:
