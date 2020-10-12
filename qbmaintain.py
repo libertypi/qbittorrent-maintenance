@@ -3,6 +3,7 @@ import pickle
 import re
 import shutil
 from collections import namedtuple
+from operator import attrgetter, itemgetter
 from sys import argv
 from urllib.parse import urljoin
 
@@ -70,7 +71,7 @@ class qBittorrent:
         if self.seedDir is None:
             return
         re_ext = re.compile(r"\.!qB$")
-        names = frozenset(i["name"] for i in self.torrents.values())
+        names = frozenset(map(itemgetter("name"), self.torrents.values()))
         with os.scandir(self.seedDir) as it:
             for entry in it:
                 if re_ext.sub("", entry.name) not in names:
@@ -91,7 +92,7 @@ class qBittorrent:
             realSpace = max(realSpace, shutil.disk_usage(self.seedDir).free)
         except TypeError:
             pass
-        self.freeSpace = realSpace - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
+        self.freeSpace = realSpace - sum(map(itemgetter("amount_left"), self.torrents.values())) - self.spaceQuota
 
         return (
             0 <= self.upSpeed < self.upSpeedThresh
@@ -110,7 +111,7 @@ class qBittorrent:
     def remove_torrents(self, removeList: tuple):
         if removeList and not debug:
             path = "torrents/delete"
-            payload = {"hashes": "|".join(v.hash for v in removeList), "deleteFiles": True}
+            payload = {"hashes": "|".join(map(attrgetter("hash"), removeList)), "deleteFiles": True}
             self._request(path, params=payload)
         for v in removeList:
             log.record("Remove", v.size, v.title)
@@ -347,11 +348,13 @@ class MIPSolver:
     def __init__(self, *, removeCand, downloadCand, qb: qBittorrent):
         self.removeCand = tuple(removeCand)
         self.downloadCand = tuple(downloadCand)
-        self.removeCandSize = sum(i.size for i in self.removeCand)
+        self.removeCandSize = sum_attr("size", self.removeCand)
         self.qb = qb
         self.freeSpace = qb.freeSpace
+        self._solve()
 
-        solver = self.solver = pywraplp.Solver.CreateSolver("TorrentOptimizer", "CBC")
+    def _solve(self):
+        solver = pywraplp.Solver.CreateSolver("CBC")
         constSize = solver.Constraint(-solver.infinity(), self.freeSpace)
         objective = solver.Objective()
 
@@ -366,26 +369,28 @@ class MIPSolver:
             objective.SetCoefficient(v, t.peer)
 
         objective.SetMaximization()
-        self.optimal = solver.Solve() == solver.OPTIMAL
 
-        if self.optimal:
+        if solver.Solve() == solver.OPTIMAL:
+            self.wall_time = solver.wall_time()
+            self.obj_value = objective.Value()
             self.removeList = tuple(t for v, t in removePool if v.solution_value() == 1)
             self.downloadList = tuple(t for v, t in downloadPool if v.solution_value() == 1)
         else:
-            self.removeList = self.removeCand if self.freeSpace < -self.removeCandSize else tuple()
-            self.downloadList = tuple()
+            self.wall_time = self.obj_value = None
+            self.removeList = self.removeCand if self.freeSpace < -self.removeCandSize else ()
+            self.downloadList = ()
 
     def report(self):
         sepSlim = "-" * 50
         maxAvailSpace = self.freeSpace + self.removeCandSize
-        removeSize = sum(i.size for i in self.removeList)
-        downloadSize = sum(i.size for i in self.downloadList)
+        removeSize = sum_attr("size", self.removeList)
+        downloadSize = sum_attr("size", self.downloadList)
         finalFreeSpace = self.freeSpace + removeSize - downloadSize
 
         print(sepSlim)
         print(
             "Download candidates: {}. Total: {}.".format(
-                len(self.downloadCand), humansize(sum(i.size for i in self.downloadCand))
+                len(self.downloadCand), humansize(sum_attr("size", self.downloadCand))
             )
         )
         print(
@@ -398,14 +403,10 @@ class MIPSolver:
             print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
 
         print(sepSlim)
-        if self.optimal:
-            print(
-                "Problem solved in {} milliseconds, objective value: {}.".format(
-                    self.solver.wall_time(), self.solver.Objective().Value()
-                )
-            )
-        else:
+        if self.wall_time is None:
             print("MIP solver cannot find an optimal solution.")
+        else:
+            print(f"Problem solved in {self.wall_time} milliseconds, objective value: {self.obj_value}.")
 
         print(f"Free space left after operation: {humansize(self.freeSpace)} => {humansize(finalFreeSpace)}.")
 
@@ -416,7 +417,7 @@ class MIPSolver:
             print(sepSlim)
             print(
                 "{}: {}/{}. Total: {}, {} peers.".format(
-                    title, len(final), len(cand), humansize(size), sum(i.peer for i in final)
+                    title, len(final), len(cand), humansize(size), sum_attr("peer", final)
                 )
             )
             for v in final:
@@ -460,6 +461,10 @@ def copy_backup(source: str, dest: str):
         pass
     except OSError as e:
         print(f'Copying "{source}" to "{dest}" failed: {e}')
+
+
+def sum_attr(name: str, target) -> int:
+    return sum(map(attrgetter(name), target))
 
 
 def humansize(size: int):
