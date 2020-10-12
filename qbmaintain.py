@@ -3,7 +3,6 @@ import pickle
 import re
 import shutil
 from collections import namedtuple
-from operator import attrgetter, itemgetter
 from sys import argv
 from urllib.parse import urljoin
 
@@ -71,7 +70,7 @@ class qBittorrent:
         if self.seedDir is None:
             return
         re_ext = re.compile(r"\.!qB$")
-        names = frozenset(map(itemgetter("name"), self.torrents.values()))
+        names = frozenset(i["name"] for i in self.torrents.values())
         with os.scandir(self.seedDir) as it:
             for entry in it:
                 if re_ext.sub("", entry.name) not in names:
@@ -92,7 +91,7 @@ class qBittorrent:
             realSpace = max(realSpace, shutil.disk_usage(self.seedDir).free)
         except TypeError:
             pass
-        self.freeSpace = realSpace - sum(map(itemgetter("amount_left"), self.torrents.values())) - self.spaceQuota
+        self.freeSpace = realSpace - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
 
         return (
             0 <= self.upSpeed < self.upSpeedThresh
@@ -111,7 +110,7 @@ class qBittorrent:
     def remove_torrents(self, removeList: tuple):
         if removeList and not debug:
             path = "torrents/delete"
-            payload = {"hashes": "|".join(map(attrgetter("hash"), removeList)), "deleteFiles": True}
+            payload = {"hashes": "|".join(i.hash for i in removeList), "deleteFiles": True}
             self._request(path, params=payload)
         for v in removeList:
             log.record("Remove", v.size, v.title)
@@ -348,7 +347,7 @@ class MIPSolver:
     def __init__(self, *, removeCand, downloadCand, qb: qBittorrent):
         self.removeCand = tuple(removeCand)
         self.downloadCand = tuple(downloadCand)
-        self.removeCandSize = sum_attr("size", self.removeCand)
+        self.removeCandSize = sum(i.size for i in self.removeCand)
         self.qb = qb
         self.freeSpace = qb.freeSpace
         self._solve()
@@ -383,14 +382,14 @@ class MIPSolver:
     def report(self):
         sepSlim = "-" * 50
         maxAvailSpace = self.freeSpace + self.removeCandSize
-        removeSize = sum_attr("size", self.removeList)
-        downloadSize = sum_attr("size", self.downloadList)
+        removeSize = sum(i.size for i in self.removeList)
+        downloadSize = sum(i.size for i in self.downloadList)
         finalFreeSpace = self.freeSpace + removeSize - downloadSize
 
         print(sepSlim)
         print(
             "Download candidates: {}. Total: {}.".format(
-                len(self.downloadCand), humansize(sum_attr("size", self.downloadCand))
+                len(self.downloadCand), humansize(sum(i.size for i in self.downloadCand))
             )
         )
         print(
@@ -417,7 +416,7 @@ class MIPSolver:
             print(sepSlim)
             print(
                 "{}: {}/{}. Total: {}, {} peers.".format(
-                    title, len(final), len(cand), humansize(size), sum_attr("peer", final)
+                    title, len(final), len(cand), humansize(size), sum(i.peer for i in final)
                 )
             )
             for v in final:
@@ -461,10 +460,6 @@ def copy_backup(source: str, dest: str):
         pass
     except OSError as e:
         print(f'Copying "{source}" to "{dest}" failed: {e}')
-
-
-def sum_attr(name: str, target) -> int:
-    return sum(map(attrgetter(name), target))
 
 
 def humansize(size: int):
