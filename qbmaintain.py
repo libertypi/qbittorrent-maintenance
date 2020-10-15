@@ -208,7 +208,7 @@ class Data:
         """Discover the slowest torrents using jenks natural breaks method."""
         speeds = self.torrentFrame.last("D").resample("T").bfill().diff().mean()
         try:
-            breaks = jenks_breaks(speeds, nb_class=min(speeds.count().item() - 1, 4))[1]
+            breaks = jenks_breaks(speeds, nb_class=min(speeds.count().item() - 1, 3))[1]
         except Exception:
             breaks = speeds.mean()
         return speeds.loc[speeds <= breaks].index
