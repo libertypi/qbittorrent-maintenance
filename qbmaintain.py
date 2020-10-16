@@ -209,7 +209,8 @@ class Data:
         speeds = self.torrentFrame.last("D").resample("T").bfill().diff().mean()
         try:
             breaks = jenks_breaks(speeds, nb_class=min(speeds.count().item() - 1, 3))[1]
-        except Exception:
+        except Exception as e:
+            print("Warnning: jenkspy failed due to:", e)
             breaks = speeds.mean()
         return speeds.loc[speeds <= breaks].index
 
