@@ -348,7 +348,7 @@ class MIPSolver:
         2: total download <= qBittorrent max_active_downloads
 
     Objective:
-        Maximize: sum(downloadPeer) - sum(removedPeer)
+        Maximize: sum(downloadPeer) - sum(removedPeer) * 0.5
     """
 
     def __init__(self, *, removeCand, downloadCand, qb: qBittorrent):
@@ -364,29 +364,26 @@ class MIPSolver:
         solver = pywraplp.Solver.CreateSolver("CBC")
         constSize = solver.Constraint(-solver.infinity(), self.freeSpace)
         objective = solver.Objective()
-        removePool = []
-        downloadPool = []
 
-        for t in self.removeCand:
-            v = solver.BoolVar(t.hash)
+        removePool = tuple((solver.BoolVar(t.hash), t) for t in self.removeCand)
+        downloadPool = tuple((solver.BoolVar(t.tid), t) for t in self.downloadCand)
+
+        for v, t in removePool:
             constSize.SetCoefficient(v, -t.size)
             objective.SetCoefficient(v, -t.peer)
-            removePool.append(v)
 
-        for t in self.downloadCand:
-            v = solver.BoolVar(t.tid)
+        for v, t in downloadPool:
             constSize.SetCoefficient(v, t.size)
             objective.SetCoefficient(v, t.peer * 2)
-            downloadPool.append(v)
 
-        solver.Add(solver.Sum(downloadPool) <= self.maxDownloads)
+        solver.Add(solver.Sum(i[0] for i in downloadPool) <= self.maxDownloads)
         objective.SetMaximization()
 
         if solver.Solve() == solver.OPTIMAL:
             self.wall_time = solver.wall_time()
             self.obj_value = objective.Value()
-            self.removeList = tuple(t for t, v in zip(self.removeCand, removePool) if v.solution_value() == 1)
-            self.downloadList = tuple(t for t, v in zip(self.downloadCand, downloadPool) if v.solution_value() == 1)
+            self.removeList = tuple(t for v, t in removePool if v.solution_value() == 1)
+            self.downloadList = tuple(t for v, t in downloadPool if v.solution_value() == 1)
         else:
             self.wall_time = self.obj_value = None
             self.removeList = self.removeCand if self.freeSpace < -self.removeCandSize else ()
