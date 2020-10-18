@@ -39,11 +39,17 @@ class qBittorrent:
 
         self.upSpeedThresh, self.dlSpeedThresh = (int(i * byteUnit["MiB"]) for i in speedThresh)
         self.spaceQuota = int(spaceQuota * byteUnit["GiB"])
+        self.preferences = None
 
         self.datafile = datafile
         self.data = self._load_data()
         self.upSpeed, self.dlSpeed = self.data.record(self)
         print(f"qBittorrent average speed last hour: UL: {humansize(self.upSpeed)}/s, DL: {humansize(self.dlSpeed)}/s.")
+
+    def get_preference(self, key: str):
+        if self.preferences is None:
+            self.preferences = self._request("app/preferences").json()
+        return self.preferences[key]
 
     def _request(self, path: str, **kwargs):
         response = requests.get(urljoin(self.api_baseurl, path), **kwargs, timeout=7)
@@ -236,11 +242,9 @@ class MTeam:
         self.loginPage = urljoin(self.domain, "takelogin.php")
         self.loginReferer = {"referer": urljoin(self.domain, "login.php")}
         try:
-            a = minPeer[0] / byteUnit["GiB"]
-            b = minPeer[1]
+            self.newTorrentMinPeer = (minPeer[0] / byteUnit["GiB"], minPeer[1])
         except (IndexError, TypeError):
-            a = b = 0
-        self.bellowMinPeer = lambda size, peer: peer < a * size + b
+            self.newTorrentMinPeer = (0, 0)
 
     def _get(self, url: str):
         for i in range(3):
@@ -266,6 +270,7 @@ class MTeam:
         re_size = re.compile(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)")
         re_tid = re.compile(r"\bid=(?P<tid>[0-9]+)")
         cols = {}
+        A, B = self.newTorrentMinPeer
 
         print(f"Connecting to M-Team... Feeds: {len(self.feeds)}.")
 
@@ -301,7 +306,7 @@ class MTeam:
                     peer = int(re_nondigit.sub("", tr[colDown].get_text()))
                     size = re_size.search(tr[colSize].get_text())
                     size = int(float(size["num"]) * byteUnit[size["unit"]])
-                    if self.bellowMinPeer(size, peer):
+                    if peer < A * size + B:
                         continue
 
                     link = tr[colTitle].find("a", href=re_download)["href"]
@@ -336,10 +341,11 @@ class MIPSolver:
     The goal is to maximize obtained peers under several constraints.
 
     Constraints:
-        1, sum(downloadSize) <= freeSpace + sum(removedSize)
+        1: sum(downloadSize) <= freeSpace + sum(removedSize)
             --> sum(downloadSize) - sum(removedSize) <= freeSpace
             When freeSpace + sum(removedSize) < 0, this become impossible to satisfy.
             So the algorithm should delete all remove candidates to free up space.
+        2: total download <= qBittorrent max_active_downloads
 
     Objective:
         Maximize: sum(downloadPeer) - sum(removedPeer)
@@ -351,30 +357,36 @@ class MIPSolver:
         self.removeCandSize = sum(i.size for i in self.removeCand)
         self.qb = qb
         self.freeSpace = qb.freeSpace
+        self.maxDownloads = qb.get_preference("max_active_downloads")
         self._solve()
 
     def _solve(self):
         solver = pywraplp.Solver.CreateSolver("CBC")
         constSize = solver.Constraint(-solver.infinity(), self.freeSpace)
         objective = solver.Objective()
+        removePool = []
+        downloadPool = []
 
-        removePool = tuple((solver.BoolVar(t.hash), t) for t in self.removeCand)
-        downloadPool = tuple((solver.BoolVar(t.tid), t) for t in self.downloadCand)
-
-        for v, t in removePool:
+        for t in self.removeCand:
+            v = solver.BoolVar(t.hash)
             constSize.SetCoefficient(v, -t.size)
-            objective.SetCoefficient(v, -0.5 * t.peer)
-        for v, t in downloadPool:
-            constSize.SetCoefficient(v, t.size)
-            objective.SetCoefficient(v, t.peer)
+            objective.SetCoefficient(v, -t.peer)
+            removePool.append(v)
 
+        for t in self.downloadCand:
+            v = solver.BoolVar(t.tid)
+            constSize.SetCoefficient(v, t.size)
+            objective.SetCoefficient(v, t.peer * 2)
+            downloadPool.append(v)
+
+        solver.Add(solver.Sum(downloadPool) <= self.maxDownloads)
         objective.SetMaximization()
 
         if solver.Solve() == solver.OPTIMAL:
             self.wall_time = solver.wall_time()
             self.obj_value = objective.Value()
-            self.removeList = tuple(t for v, t in removePool if v.solution_value() == 1)
-            self.downloadList = tuple(t for v, t in downloadPool if v.solution_value() == 1)
+            self.removeList = tuple(t for t, v in zip(self.removeCand, removePool) if v.solution_value() == 1)
+            self.downloadList = tuple(t for t, v in zip(self.downloadCand, downloadPool) if v.solution_value() == 1)
         else:
             self.wall_time = self.obj_value = None
             self.removeList = self.removeCand if self.freeSpace < -self.removeCandSize else ()
@@ -389,8 +401,8 @@ class MIPSolver:
 
         print(sepSlim)
         print(
-            "Download candidates: {}. Total: {}.".format(
-                len(self.downloadCand), humansize(sum(i.size for i in self.downloadCand))
+            "Download candidates: {}. Total: {}. Limit: {}.".format(
+                len(self.downloadCand), humansize(sum(i.size for i in self.downloadCand)), self.maxDownloads
             )
         )
         print(
