@@ -336,7 +336,7 @@ class MTeam:
                 print("Failed:", t.title)
 
 
-class MIPSolver:
+class MPSolver:
     """Using OR-Tools from Google to find the best combination of downloads and removals.
     The goal is to maximize obtained peers under several constraints.
 
@@ -361,7 +361,7 @@ class MIPSolver:
         self._solve()
 
     def _solve(self):
-        solver = pywraplp.Solver.CreateSolver("CBC")
+        solver = pywraplp.Solver.CreateSolver("CP_SAT")
         constSize = solver.Constraint(-solver.infinity(), self.freeSpace)
         objective = solver.Objective()
 
@@ -519,7 +519,7 @@ def main():
             minPeer=config.newTorrentMinPeer,
             qb=qb,
         )
-        mipsolver = MIPSolver(
+        mipsolver = MPSolver(
             removeCand=qb.get_remove_cands(),
             downloadCand=mteam.fetch(),
             qb=qb,
