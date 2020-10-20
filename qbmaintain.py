@@ -1,16 +1,14 @@
-import os
 import pickle
 import re
 import shutil
 from collections import namedtuple
+from pathlib import Path
 from sys import argv
 from urllib.parse import urljoin
 
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 from jenkspy import jenks_breaks
-from ortools.linear_solver import pywraplp
 
 byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGTP"), (1024 ** s for s in range(1, 6))) for u in us}
 
@@ -19,22 +17,24 @@ class qBittorrent:
 
     Removable = namedtuple("Removable", ("hash", "size", "peer", "title"))
 
-    def __init__(self, *, host: str, seedDir: str, watchDir: str, speedThresh: tuple, spaceQuota: int, datafile: str):
+    def __init__(self, *, host: str, seedDir: str, watchDir: str, speedThresh: tuple, spaceQuota: int, datafile: Path):
 
         self.api_baseurl = urljoin(host, "api/v2/")
+        self._session = requests.session()
         path = "sync/maindata"
         maindata = self._request(path).json()
+
         self.state = maindata["server_state"]
         self.torrents = maindata["torrents"]
         if self.state["connection_status"] not in ("connected", "firewalled"):
             raise RuntimeError("qBittorrent is not connected to the internet.")
 
         try:
-            self.seedDir = os.path.abspath(seedDir)
-            self.watchDir = os.path.abspath(watchDir)
+            self.seedDir = Path(seedDir)
+            self.watchDir = Path(watchDir)
         except TypeError as e:
             if not debug:
-                raise ValueError("seedDir and watchDir were not set properly.") from e
+                raise ValueError("seedDir and watchDir are not set properly.")
             self.seedDir = self.watchDir = None
 
         self.upSpeedThresh, self.dlSpeedThresh = (int(i * byteUnit["MiB"]) for i in speedThresh)
@@ -52,44 +52,49 @@ class qBittorrent:
         return self.preferences[key]
 
     def _request(self, path: str, **kwargs):
-        response = requests.get(urljoin(self.api_baseurl, path), **kwargs, timeout=7)
+        response = self._session.get(urljoin(self.api_baseurl, path), **kwargs, timeout=7)
         response.raise_for_status()
         return response
 
     def _load_data(self):
         """Load Data object from pickle."""
         try:
-            with open(self.datafile, mode="rb") as f:
+            with self.datafile.open(mode="rb") as f:
                 data = pickle.load(f)
             assert data.integrity_test(), "Intergrity test failed."
-        except Exception as e:
+        except (OSError, pickle.PickleError, AssertionError) as e:
             print(f"Loading data from '{self.datafile}' failed: {e}")
             if not debug:
                 try:
-                    os.rename(self.datafile, f"{self.datafile}_{pd.Timestamp.now().strftime('%y%m%d_%H%M%S')}")
+                    self.datafile.rename(f"{self.datafile}_{pd.Timestamp.now().strftime('%y%m%d_%H%M%S')}")
                 except OSError:
                     pass
             data = Data()
         return data
 
     def clean_seedDir(self):
-        if self.seedDir is None:
+        try:
+            listdir = self.seedDir.iterdir()
+        except AttributeError:
             return
-        re_ext = re.compile(r"\.!qB$")
+
         names = frozenset(i["name"] for i in self.torrents.values())
-        with os.scandir(self.seedDir) as it:
-            for entry in it:
-                if re_ext.sub("", entry.name) not in names:
-                    print("Cleanup:", entry.name)
-                    try:
-                        if not debug:
-                            if entry.is_dir():
-                                shutil.rmtree(entry.path)
-                            else:
-                                os.remove(entry.path)
-                        log.record("Cleanup", None, entry.name)
-                    except OSError as e:
-                        print("Deletion Failed:", e)
+        for path in listdir:
+            if path.name not in names:
+                if path.suffix == ".!qB" and path.stem in names:
+                    continue
+                print("Cleanup:", path.name)
+                try:
+                    if debug:
+                        pass
+                    elif path.is_dir():
+                        shutil.rmtree(path)
+                    else:
+                        path.unlink()
+                except OSError as e:
+                    print("Deletion Failed:", e)
+                else:
+                    log.record("Cleanup", None, path.name)
 
     def need_action(self) -> bool:
         realSpace = self.state["free_space_on_disk"]
@@ -123,21 +128,22 @@ class qBittorrent:
 
     def add_torrent(self, filename: str, content: bytes) -> bool:
         """Save torrent to watchdir."""
-        if not debug:
+        try:
+            path = self.watchDir / filename
+            with path.open("wb") as f:
+                f.write(content)
+        except OSError as e:
             try:
-                path = os.path.join(self.watchDir, filename)
-                with open(path, "wb") as f:
-                    f.write(content)
-            except OSError as e:
-                try:
-                    if not os.path.exists(self.watchDir):
-                        os.mkdir(self.watchDir)
-                        return self.add_torrent(filename, content)
-                except OSError:
-                    pass
-                log.record("Error", None, f"Saving '{filename}' to '{self.watchDir}' failed: {e}")
-                print("Saving failed:", e)
-                return False
+                if not self.watchDir.exists():
+                    self.watchDir.mkdir()
+                    return self.add_torrent(filename, content)
+            except OSError:
+                pass
+
+            msg = f"Saving '{filename}' to '{self.watchDir}' failed: {e}"
+            log.record("Error", None, msg)
+            print(msg)
+            return False
         return True
 
     def resume_paused(self):
@@ -149,16 +155,16 @@ class qBittorrent:
                 payload = {"hashes": "all"}
                 self._request(path, params=payload)
 
-    def dump_data(self, backupDir: str):
+    def dump_data(self):
         if debug:
             return
         try:
-            with open(self.datafile, "wb") as f:
+            with self.datafile.open("wb") as f:
                 pickle.dump(self.data, f)
-            copy_backup(self.datafile, backupDir)
         except (OSError, pickle.PickleError) as e:
-            log.record("Error", None, f"Writing data to disk failed: {e}")
-            print("Writing data to disk failed:", e)
+            msg = f"Writing data to disk failed: {e}"
+            log.record("Error", None, msg)
+            print(msg)
 
 
 class Data:
@@ -177,15 +183,18 @@ class Data:
         return self.session
 
     def integrity_test(self):
-        return all(
-            isinstance(x, y)
-            for x, y in (
-                (self.qBittorrentFrame, pd.DataFrame),
-                (self.torrentFrame, pd.DataFrame),
-                (self.mteamHistory, set),
-                (self.session, requests.Session),
+        try:
+            return all(
+                isinstance(x, y)
+                for x, y in (
+                    (self.qBittorrentFrame, pd.DataFrame),
+                    (self.torrentFrame, pd.DataFrame),
+                    (self.mteamHistory, set),
+                    (self.session, requests.Session),
+                )
             )
-        )
+        except AttributeError:
+            return False
 
     def record(self, qb: qBittorrent):
         """Record qBittorrent traffic data to pandas DataFrame. Returns the last hour avg UL/DL speeds."""
@@ -216,7 +225,7 @@ class Data:
         try:
             breaks = jenks_breaks(speeds, nb_class=min(speeds.count().item() - 1, 3))[1]
         except Exception as e:
-            print("Warnning: jenkspy failed due to:", e)
+            print("Jenkspy failed:", e)
             breaks = speeds.mean()
         return speeds.loc[speeds <= breaks].index
 
@@ -235,34 +244,40 @@ class MTeam:
 
     def __init__(self, *, feeds: tuple, account: tuple, minPeer: tuple, qb: qBittorrent):
         self.feeds = feeds
-        self.loginPayload = {"username": account[0], "password": account[1]}
+        self.account = account
         self.qb = qb
         self.session = qb.data.session
         self.history = qb.data.mteamHistory
-        self.loginPage = urljoin(self.domain, "takelogin.php")
-        self.loginReferer = {"referer": urljoin(self.domain, "login.php")}
-        try:
-            self.newTorrentMinPeer = (minPeer[0] / byteUnit["GiB"], minPeer[1])
-        except (IndexError, TypeError):
-            self.newTorrentMinPeer = (0, 0)
+        self.loginParam = None
+        self.minPeer = (minPeer[0] / byteUnit["GiB"], minPeer[1])
 
-    def _get(self, url: str):
+    def _get(self, path: str):
+        url = urljoin(self.domain, path)
         for i in range(3):
             try:
                 response = self.session.get(url, timeout=(7, 28))
                 response.raise_for_status()
                 if "/login.php" not in response.url:
                     return response
-                assert i < 2, "Login failed."
-                print("Login...")
-                self.session.post(self.loginPage, data=self.loginPayload, headers=self.loginReferer)
-            except Exception as e:
-                print(e)
                 if i < 2:
-                    print("Retrying... Attempt:", i + 1)
-                    self.session = self.qb.data.init_session()
+                    self._login()
+            except requests.HTTPError:
+                pass
+            except Exception:
+                self.session = self.qb.data.init_session()
+
+    def _login(self):
+        if not self.loginParam:
+            self.loginParam = {
+                "url": urljoin(self.domain, "takelogin.php"),
+                "data": {"username": self.account[0], "password": self.account[1]},
+                "headers": {"referer": urljoin(self.domain, "login.php")},
+            }
+        self.session.post(**self.loginParam)
 
     def fetch(self):
+        from bs4 import BeautifulSoup
+
         re_download = re.compile(r"\bdownload\.php\?")
         re_details = re.compile(r"\bdetails\.php\?")
         re_timelimit = re.compile(r"限時：[^日]*$")
@@ -270,25 +285,23 @@ class MTeam:
         re_size = re.compile(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)")
         re_tid = re.compile(r"\bid=(?P<tid>[0-9]+)")
         cols = {}
-        A, B = self.newTorrentMinPeer
+        A, B = self.minPeer
 
         print(f"Connecting to M-Team... Feeds: {len(self.feeds)}.")
 
         for feed in self.feeds:
             try:
-                response = self._get(urljoin(self.domain, feed))
-                soup = (
-                    tr.find_all("td", recursive=False)
-                    for tr in BeautifulSoup(response.content, "html.parser").select("#form_torrent table.torrents > tr")
-                )
-                print("Fetching feed success, elapsed:", response.elapsed)
+                soup = BeautifulSoup(self._get(feed).content, "html.parser")
+                soup = (tr.find_all("td", recursive=False) for tr in soup.select("#form_torrent table.torrents > tr"))
                 tr = next(soup)
             except StopIteration:
                 print("Unable to locate torrent table, css selector broken?")
                 continue
-            except Exception:
-                print("Fetching feed failed.")
+            except Exception as e:
+                print("Fetching feed failed:", e)
                 continue
+            else:
+                print("Fetching feed success.")
 
             for i, td in enumerate(tr):
                 title = td.find(title=True)
@@ -327,13 +340,16 @@ class MTeam:
 
     def download(self, downloadList: tuple):
         for t in downloadList:
-            response = self._get(urljoin(self.domain, t.link))
-            if response is not None and self.qb.add_torrent(f"{t.tid}.torrent", response.content):
-                print("Download:", t.title)
-                self.history.add(t.tid)
-                log.record("Download", t.size, t.title)
-            else:
-                print("Failed:", t.title)
+            if not debug:
+                try:
+                    content = self._get(t.link).content
+                    assert self.qb.add_torrent(f"{t.tid}.torrent", content)
+                except (AttributeError, AssertionError):
+                    print("Failed:", t.title)
+                    continue
+            self.history.add(t.tid)
+            log.record("Download", t.size, t.title)
+            print("Download:", t.title)
 
 
 class MPSolver:
@@ -358,36 +374,39 @@ class MPSolver:
         self.qb = qb
         self.freeSpace = qb.freeSpace
         self.maxDownloads = qb.get_preference("max_active_downloads")
+        self.wall_time = None
         self._solve()
 
     def _solve(self):
-        solver = pywraplp.Solver.CreateSolver("CP_SAT")
-        constSize = solver.Constraint(-solver.infinity(), self.freeSpace)
-        objective = solver.Objective()
-
-        removePool = tuple((solver.BoolVar(t.hash), t) for t in self.removeCand)
-        downloadPool = tuple((solver.BoolVar(t.tid), t) for t in self.downloadCand)
-
-        for v, t in removePool:
-            constSize.SetCoefficient(v, -t.size)
-            objective.SetCoefficient(v, -t.peer)
-
-        for v, t in downloadPool:
-            constSize.SetCoefficient(v, t.size)
-            objective.SetCoefficient(v, t.peer * 2)
-
-        solver.Add(solver.Sum(i[0] for i in downloadPool) <= self.maxDownloads)
-        objective.SetMaximization()
-
-        if solver.Solve() == solver.OPTIMAL:
-            self.wall_time = solver.wall_time()
-            self.obj_value = objective.Value()
-            self.removeList = tuple(t for v, t in removePool if v.solution_value() == 1)
-            self.downloadList = tuple(t for v, t in downloadPool if v.solution_value() == 1)
-        else:
-            self.wall_time = self.obj_value = None
-            self.removeList = self.removeCand if self.freeSpace < -self.removeCandSize else ()
+        if self.freeSpace < -self.removeCandSize:
+            self.removeList = self.removeCand
             self.downloadList = ()
+            return
+
+        from ortools.sat.python import cp_model
+
+        model = cp_model.CpModel()
+
+        sizeCoef = [-t.size for t in self.removeCand]
+        peerCoef = [-t.peer for t in self.removeCand]
+        sizeCoef.extend(t.size for t in self.downloadCand)
+        peerCoef.extend(t.peer * 2 for t in self.downloadCand)
+        pool = tuple(model.NewBoolVar(f"{i}") for i in range(len(sizeCoef)))
+
+        model.Add(cp_model.LinearExpr.ScalProd(pool, sizeCoef) <= self.freeSpace)
+        model.Add(cp_model.LinearExpr.Sum(pool) <= self.maxDownloads)
+        model.Maximize(cp_model.LinearExpr.ScalProd(pool, peerCoef))
+
+        solver = cp_model.CpSolver()
+        if solver.Solve(model) == cp_model.OPTIMAL:
+            self.wall_time = solver.WallTime()
+            self.obj_value = solver.ObjectiveValue()
+
+            split = len(self.removeCand)
+            self.removeList = tuple(t for t, v in zip(self.removeCand, pool) if solver.Value(v))
+            self.downloadList = tuple(t for t, v in zip(self.downloadCand, pool[split:]) if solver.Value(v))
+        else:
+            self.removeList = self.downloadList = ()
 
     def report(self):
         sepSlim = "-" * 50
@@ -399,23 +418,32 @@ class MPSolver:
         print(sepSlim)
         print(
             "Download candidates: {}. Total: {}. Limit: {}.".format(
-                len(self.downloadCand), humansize(sum(i.size for i in self.downloadCand)), self.maxDownloads
+                len(self.downloadCand),
+                humansize(sum(i.size for i in self.downloadCand)),
+                self.maxDownloads,
             )
         )
         print(
             "Remove candidates: {}/{}. Total: {}.".format(
-                len(self.removeCand), len(self.qb.torrents), humansize(self.removeCandSize)
+                len(self.removeCand),
+                len(self.qb.torrents),
+                humansize(self.removeCandSize),
             )
         )
-        print(f"Disk free space: {humansize(self.freeSpace)}. Max avail space: {humansize(maxAvailSpace)}.")
+        print(
+            "Disk free space: {}. Max avail space: {}.".format(
+                humansize(self.freeSpace),
+                humansize(maxAvailSpace),
+            )
+        )
         for v in self.removeCand:
             print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
 
         print(sepSlim)
         if self.wall_time is None:
-            print("MIP solver cannot find an optimal solution.")
+            print("CP-SAT solver cannot find an optimal solution.")
         else:
-            print(f"Problem solved in {self.wall_time} milliseconds, objective value: {self.obj_value}.")
+            print(f"Problem solved in {self.wall_time:5f} seconds, objective value: {self.obj_value}.")
 
         print(f"Free space left after operation: {humansize(self.freeSpace)} => {humansize(finalFreeSpace)}.")
 
@@ -426,7 +454,11 @@ class MPSolver:
             print(sepSlim)
             print(
                 "{}: {}/{}. Total: {}, {} peers.".format(
-                    title, len(final), len(cand), humansize(size), sum(i.peer for i in final)
+                    title,
+                    len(final),
+                    len(cand),
+                    humansize(size),
+                    sum(i.peer for i in final),
                 )
             )
             for v in final:
@@ -438,7 +470,7 @@ class Log(list):
     def record(self, action, size, name):
         self.append("{:20}{:12}{:14}{}\n".format(pd.Timestamp.now().strftime("%D %T"), action, humansize(size), name))
 
-    def write(self, logfile: str, backupDir: str):
+    def write(self, logfile: Path):
         if not self:
             return
 
@@ -449,27 +481,23 @@ class Log(list):
         if debug:
             print(sep)
             print(header, *content, sep="", end="")
-        else:
-            try:
-                with open(logfile, mode="r", encoding="utf-8") as f:
+            return
+
+        try:
+            with logfile.open(mode="r+", encoding="utf-8") as f:
+                try:
                     oldLog = f.readlines()[2:]
-            except (OSError, IndexError):
-                oldLog = None
-            with open(logfile, mode="w", encoding="utf-8") as f:
+                except IndexError:
+                    oldLog = ()
+                f.seek(0)
+                f.truncate()
                 f.write(header)
                 f.writelines(content)
-                if oldLog:
-                    f.writelines(oldLog)
-            copy_backup(logfile, backupDir)
-
-
-def copy_backup(source: str, dest: str):
-    try:
-        shutil.copy(source, dest)
-    except TypeError:
-        pass
-    except OSError as e:
-        print(f'Copying "{source}" to "{dest}" failed: {e}')
+                f.writelines(oldLog)
+        except FileNotFoundError:
+            with logfile.open(mode="w", encoding="utf-8") as f:
+                f.write(header)
+                f.writelines(content)
 
 
 def humansize(size: int):
@@ -497,9 +525,9 @@ def main():
             config = qbconfig.RemoteConfig
             debug = True
 
-    script_dir = os.path.dirname(__file__)
-    datafile = os.path.join(script_dir, "data")
-    logfile = os.path.join(script_dir, "qb-maintenance.log")
+    script_dir = Path(__file__).parent
+    datafile = script_dir / "data"
+    logfile = script_dir / "qb-maintenance.log"
 
     qb = qBittorrent(
         host=config.qBittorrentHost,
@@ -530,8 +558,8 @@ def main():
         mteam.download(mipsolver.downloadList)
 
     qb.resume_paused()
-    qb.dump_data(backupDir=config.backupDir)
-    log.write(logfile, backupDir=config.backupDir)
+    qb.dump_data()
+    log.write(logfile)
 
 
 log = Log()
