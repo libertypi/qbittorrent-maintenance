@@ -32,7 +32,7 @@ class qBittorrent:
         try:
             self.seedDir = Path(seedDir)
             self.watchDir = Path(watchDir)
-        except TypeError as e:
+        except TypeError:
             if not debug:
                 raise ValueError("seedDir and watchDir are not set properly.")
             self.seedDir = self.watchDir = None
