@@ -139,7 +139,6 @@ class qBittorrent:
                     return self.add_torrent(filename, content)
             except OSError:
                 pass
-
             msg = f"Saving '{filename}' to '{self.watchDir}' failed: {e}"
             log.record("Error", None, msg)
             print(msg)
@@ -373,16 +372,17 @@ class MPSolver:
         self.removeCandSize = sum(i.size for i in self.removeCand)
         self.qb = qb
         self.freeSpace = qb.freeSpace
-        self.maxDownloads = qb.get_preference("max_active_downloads")
-        self.wall_time = None
-        self._solve()
+        self.status = None
+        self.maxDownloads = float("nan")
+        self.removeList = self.downloadList = ()
 
-    def _solve(self):
         if self.freeSpace < -self.removeCandSize:
             self.removeList = self.removeCand
-            self.downloadList = ()
-            return
+        elif self.downloadCand or self.freeSpace < 0:
+            self.maxDownloads = qb.get_preference("max_active_downloads")
+            self._solve()
 
+    def _solve(self):
         from ortools.sat.python import cp_model
 
         model = cp_model.CpModel()
@@ -398,15 +398,18 @@ class MPSolver:
         model.Maximize(cp_model.LinearExpr.ScalProd(pool, peerCoef))
 
         solver = cp_model.CpSolver()
-        if solver.Solve(model) == cp_model.OPTIMAL:
-            self.wall_time = solver.WallTime()
-            self.obj_value = solver.ObjectiveValue()
-
+        status = solver.Solve(model)
+        if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
+            self.status = {
+                "status": solver.StatusName(status),
+                "walltime": solver.WallTime(),
+                "value": solver.ObjectiveValue(),
+            }
             split = len(self.removeCand)
             self.removeList = tuple(t for t, v in zip(self.removeCand, pool) if solver.Value(v))
             self.downloadList = tuple(t for t, v in zip(self.downloadCand, pool[split:]) if solver.Value(v))
         else:
-            self.removeList = self.downloadList = ()
+            self.status = solver.StatusName(status)
 
     def report(self):
         sepSlim = "-" * 50
@@ -440,10 +443,12 @@ class MPSolver:
             print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
 
         print(sepSlim)
-        if self.wall_time is None:
-            print("CP-SAT solver cannot find an optimal solution.")
+        if isinstance(self.status, dict):
+            print("{status} solution found in {walltime:5f} seconds, objective value: {value}.".format_map(self.status))
+        elif not self.status:
+            print("CP-SAT solver did not start: unnecessary conditions.")
         else:
-            print(f"Problem solved in {self.wall_time:5f} seconds, objective value: {self.obj_value}.")
+            print("CP-SAT solver cannot find an optimal solution. Status:", self.status)
 
         print(f"Free space left after operation: {humansize(self.freeSpace)} => {humansize(finalFreeSpace)}.")
 
@@ -547,15 +552,15 @@ def main():
             minPeer=config.newTorrentMinPeer,
             qb=qb,
         )
-        mipsolver = MPSolver(
+        solver = MPSolver(
             removeCand=qb.get_remove_cands(),
             downloadCand=mteam.fetch(),
             qb=qb,
         )
-        mipsolver.report()
+        solver.report()
 
-        qb.remove_torrents(mipsolver.removeList)
-        mteam.download(mipsolver.downloadList)
+        qb.remove_torrents(solver.removeList)
+        mteam.download(solver.downloadList)
 
     qb.resume_paused()
     qb.dump_data()
