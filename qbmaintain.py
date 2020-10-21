@@ -373,7 +373,7 @@ class MPSolver:
         self.qb = qb
         self.freeSpace = qb.freeSpace
         self.status = None
-        self.maxDownloads = float("nan")
+        self.maxDownloads = float("inf")
         self.removeList = self.downloadList = ()
 
         if self.freeSpace < -self.removeCandSize:
@@ -443,23 +443,23 @@ class MPSolver:
             print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
 
         print(sepSlim)
-        if isinstance(self.status, dict):
-            print("{status} solution found in {walltime:5f} seconds, objective value: {value}.".format_map(self.status))
-        elif not self.status:
+        if self.status is None:
             print("CP-SAT solver did not start: unnecessary conditions.")
+        elif isinstance(self.status, dict):
+            print("{status} solution found in {walltime:5f} seconds, objective value: {value}.".format_map(self.status))
         else:
             print("CP-SAT solver cannot find an optimal solution. Status:", self.status)
 
         print(f"Free space left after operation: {humansize(self.freeSpace)} => {humansize(finalFreeSpace)}.")
 
-        for title, final, cand, size in (
-            ("Download", self.downloadList, self.downloadCand, downloadSize),
-            ("Remove", self.removeList, self.removeCand, removeSize),
-        ):
+        for prefix in "download", "remove":
+            final = getattr(self, prefix + "List")
+            cand = getattr(self, prefix + "Cand")
+            size = locals()[prefix + "Size"]
             print(sepSlim)
             print(
                 "{}: {}/{}. Total: {}, {} peers.".format(
-                    title,
+                    prefix.capitalize(),
                     len(final),
                     len(cand),
                     humansize(size),
