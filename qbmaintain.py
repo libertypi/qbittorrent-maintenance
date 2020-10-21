@@ -1,8 +1,8 @@
 import pickle
-import re
-import shutil
 from collections import namedtuple
 from pathlib import Path
+from re import compile as re_compile
+from shutil import disk_usage, rmtree
 from sys import argv
 from urllib.parse import urljoin
 
@@ -90,7 +90,7 @@ class qBittorrent:
                     if debug:
                         pass
                     elif path.is_dir():
-                        shutil.rmtree(path)
+                        rmtree(path)
                     else:
                         path.unlink()
                 except OSError as e:
@@ -101,7 +101,7 @@ class qBittorrent:
     def need_action(self) -> bool:
         realSpace: int = self.state["free_space_on_disk"]
         try:
-            realSpace = max(realSpace, shutil.disk_usage(self.seedDir).free)
+            realSpace = max(realSpace, disk_usage(self.seedDir).free)
         except TypeError:
             pass
         self.freeSpace = realSpace - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
@@ -255,15 +255,15 @@ class MTeam:
 
     def _get(self, path: str):
         url = urljoin(self.domain, path)
-        for i in range(3):
+        for retry in range(3):
             try:
                 response = self.session.get(url, timeout=(7, 28))
                 response.raise_for_status()
                 if "/login.php" not in response.url:
                     return response
-                if i < 2:
+                if retry < 2:
                     self._login()
-            except requests.HTTPError:
+            except (requests.ConnectionError, requests.HTTPError, requests.Timeout):
                 pass
             except Exception:
                 self.session = self.qb.data.init_session()
@@ -280,12 +280,12 @@ class MTeam:
     def fetch(self):
         from bs4 import BeautifulSoup
 
-        re_download = re.compile(r"\bdownload\.php\?")
-        re_details = re.compile(r"\bdetails\.php\?")
-        re_timelimit = re.compile(r"限時：[^日]*$")
-        re_nondigit = re.compile(r"[^0-9]+")
-        re_size = re.compile(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)")
-        re_tid = re.compile(r"\bid=(?P<tid>[0-9]+)")
+        re_download = re_compile(r"\bdownload\.php\?")
+        re_details = re_compile(r"\bdetails\.php\?")
+        re_timelimit = re_compile(r"限時：[^日]*$")
+        re_nondigit = re_compile(r"[^0-9]+")
+        re_size = re_compile(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)")
+        re_tid = re_compile(r"\bid=(?P<tid>[0-9]+)")
         cols = {}
         A, B = self.minPeer
 
@@ -392,7 +392,7 @@ class MPSolver:
         peerCoef = [-t.peer for t in self.removeCand]
         sizeCoef.extend(t.size for t in self.downloadCand)
         peerCoef.extend(t.peer * 2 for t in self.downloadCand)
-        pool = tuple(model.NewBoolVar(f"{i}") for i in range(len(sizeCoef)))
+        pool = [model.NewBoolVar(f"{i}") for i in range(len(sizeCoef))]
 
         model.Add(cp_model.LinearExpr.ScalProd(pool, sizeCoef) <= self.freeSpace)
         model.Add(cp_model.LinearExpr.Sum(pool) <= self.maxDownloads)
@@ -407,9 +407,9 @@ class MPSolver:
                 "walltime": solver.WallTime(),
                 "value": solver.ObjectiveValue(),
             }
-            split = len(self.removeCand)
-            self.removeList = tuple(t for t, v in zip(self.removeCand, pool) if solver.Value(v))
-            self.downloadList = tuple(t for t, v in zip(self.downloadCand, pool[split:]) if solver.Value(v))
+            value = map(solver.Value, pool)
+            self.removeList = tuple(t for t, v in zip(self.removeCand, value) if v)
+            self.downloadList = tuple(t for t, v in zip(self.downloadCand, value) if v)
         else:
             self.status = solver.StatusName(status)
 
