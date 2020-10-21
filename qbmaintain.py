@@ -499,10 +499,10 @@ class Log(list):
                 except IndexError:
                     oldLog = ()
                 f.seek(0)
-                f.truncate()
                 f.write(header)
                 f.writelines(content)
                 f.writelines(oldLog)
+                f.truncate()
         except FileNotFoundError:
             with logfile.open(mode="w", encoding="utf-8") as f:
                 f.write(header)
