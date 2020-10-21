@@ -8,7 +8,6 @@ from urllib.parse import urljoin
 
 import pandas as pd
 import requests
-from jenkspy import jenks_breaks
 
 byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGTP"), (1024 ** s for s in range(1, 6))) for u in us}
 
@@ -19,10 +18,9 @@ class qBittorrent:
 
     def __init__(self, *, host: str, seedDir: str, watchDir: str, speedThresh: tuple, spaceQuota: int, datafile: Path):
 
-        self.api_baseurl = urljoin(host, "api/v2/")
+        self.api_base = urljoin(host, "api/v2/")
         self._session = requests.session()
-        path = "sync/maindata"
-        maindata = self._request(path).json()
+        maindata = self._request("sync/maindata").json()
 
         self.state = maindata["server_state"]
         self.torrents = maindata["torrents"]
@@ -39,22 +37,26 @@ class qBittorrent:
 
         self.upSpeedThresh, self.dlSpeedThresh = (int(i * byteUnit["MiB"]) for i in speedThresh)
         self.spaceQuota = int(spaceQuota * byteUnit["GiB"])
-        self.preferences = None
 
         self.datafile = datafile
         self.data = self._load_data()
         self.upSpeed, self.dlSpeed = self.data.record(self)
-        print(f"qBittorrent average speed last hour: UL: {humansize(self.upSpeed)}/s, DL: {humansize(self.dlSpeed)}/s.")
+
+        print(
+            "qBittorrent average speed last hour: UL: {}/s, DL: {}/s.".format(
+                humansize(self.upSpeed), humansize(self.dlSpeed)
+            )
+        )
 
     def get_preference(self, key: str):
-        if self.preferences is None:
-            self.preferences = self._request("app/preferences").json()
-        return self.preferences[key]
+        if not hasattr(self, "_preferences"):
+            self._preferences = self._request("app/preferences").json()
+        return self._preferences[key]
 
     def _request(self, path: str, **kwargs):
-        response = self._session.get(urljoin(self.api_baseurl, path), **kwargs, timeout=7)
-        response.raise_for_status()
-        return response
+        r = self._session.get(urljoin(self.api_base, path), **kwargs, timeout=7)
+        r.raise_for_status()
+        return r
 
     def _load_data(self):
         """Load Data object from pickle."""
@@ -97,7 +99,7 @@ class qBittorrent:
                     log.record("Cleanup", None, path.name)
 
     def need_action(self) -> bool:
-        realSpace = self.state["free_space_on_disk"]
+        realSpace: int = self.state["free_space_on_disk"]
         try:
             realSpace = max(realSpace, shutil.disk_usage(self.seedDir).free)
         except TypeError:
@@ -220,6 +222,8 @@ class Data:
 
     def get_slows(self) -> pd.Index:
         """Discover the slowest torrents using jenks natural breaks method."""
+        from jenkspy import jenks_breaks
+
         speeds = self.torrentFrame.last("D").resample("T").bfill().diff().mean()
         try:
             breaks = jenks_breaks(speeds, nb_class=min(speeds.count().item() - 1, 3))[1]
@@ -247,7 +251,6 @@ class MTeam:
         self.qb = qb
         self.session = qb.data.session
         self.history = qb.data.mteamHistory
-        self.loginParam = None
         self.minPeer = (minPeer[0] / byteUnit["GiB"], minPeer[1])
 
     def _get(self, path: str):
@@ -266,7 +269,7 @@ class MTeam:
                 self.session = self.qb.data.init_session()
 
     def _login(self):
-        if not self.loginParam:
+        if not hasattr(self, "loginParam"):
             self.loginParam = {
                 "url": urljoin(self.domain, "takelogin.php"),
                 "data": {"username": self.account[0], "password": self.account[1]},
@@ -340,10 +343,8 @@ class MTeam:
     def download(self, downloadList: tuple):
         for t in downloadList:
             if not debug:
-                try:
-                    content = self._get(t.link).content
-                    assert self.qb.add_torrent(f"{t.tid}.torrent", content)
-                except (AttributeError, AssertionError):
+                r = self._get(t.link)
+                if r is None or not self.qb.add_torrent(f"{t.tid}.torrent", r.content):
                     print("Failed:", t.title)
                     continue
             self.history.add(t.tid)
@@ -399,6 +400,7 @@ class MPSolver:
 
         solver = cp_model.CpSolver()
         status = solver.Solve(model)
+
         if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
             self.status = {
                 "status": solver.StatusName(status),
@@ -446,13 +448,15 @@ class MPSolver:
         if self.status is None:
             print("CP-SAT solver did not start: unnecessary conditions.")
         elif isinstance(self.status, dict):
-            print("{status} solution found in {walltime:5f} seconds, objective value: {value}.".format_map(self.status))
+            print(
+                "{status} solution found in {walltime:.5f} seconds, objective value: {value}.".format_map(self.status)
+            )
         else:
             print("CP-SAT solver cannot find an optimal solution. Status:", self.status)
 
         print(f"Free space left after operation: {humansize(self.freeSpace)} => {humansize(finalFreeSpace)}.")
 
-        for prefix in "download", "remove":
+        for prefix in "remove", "download":
             final = getattr(self, prefix + "List")
             cand = getattr(self, prefix + "Cand")
             size = locals()[prefix + "Size"]
