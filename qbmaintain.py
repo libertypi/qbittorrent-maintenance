@@ -310,11 +310,10 @@ class MTeam:
                 title = title["title"] if title else td.get_text(strip=True)
                 cols[title] = i
 
-            colTitle = cols.get("標題", 1)
-            colSize = cols.get("大小", 4)
-            colUp = cols.get("種子數", 5)
-            colDown = cols.get("下載數", 6)
-            cols.clear()
+            colTitle = cols.pop("標題", 1)
+            colSize = cols.pop("大小", 4)
+            colUp = cols.pop("種子數", 5)
+            colDown = cols.pop("下載數", 6)
 
             for tr in soup:
                 try:
