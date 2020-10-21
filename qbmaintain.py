@@ -19,7 +19,6 @@ class qBittorrent:
     def __init__(self, *, host: str, seedDir: str, watchDir: str, speedThresh: tuple, spaceQuota: int, datafile: Path):
 
         self.api_base = urljoin(host, "api/v2/")
-        self._session = requests.session()
         maindata = self._request("sync/maindata").json()
 
         self.state = maindata["server_state"]
@@ -54,7 +53,7 @@ class qBittorrent:
         return self._preferences[key]
 
     def _request(self, path: str, **kwargs):
-        r = self._session.get(urljoin(self.api_base, path), **kwargs, timeout=7)
+        r = requests.get(urljoin(self.api_base, path), **kwargs, timeout=7)
         r.raise_for_status()
         return r
 
@@ -80,7 +79,7 @@ class qBittorrent:
         except AttributeError:
             return
 
-        names = frozenset(i["name"] for i in self.torrents.values())
+        names = {i["name"] for i in self.torrents.values()}
         for path in listdir:
             if path.name not in names:
                 if path.suffix == ".!qB" and path.stem in names:
@@ -104,6 +103,7 @@ class qBittorrent:
             realSpace = max(realSpace, disk_usage(self.seedDir).free)
         except TypeError:
             pass
+
         self.freeSpace = realSpace - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
 
         return (
@@ -149,7 +149,7 @@ class qBittorrent:
 
     def resume_paused(self):
         paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
-        if any(i["state"] in paused for i in self.torrents.values()):
+        if not paused.isdisjoint(i["state"] for i in self.torrents.values()):
             print("Resume torrents.")
             if not debug:
                 path = "torrents/resume"
@@ -353,13 +353,13 @@ class MTeam:
 
 
 class MPSolver:
-    """Using OR-Tools from Google to find the best combination of downloads and removals.
+    """Using Google OR-Tools to find the optimal choices of downloads and removals.
     The goal is to maximize obtained peers under several constraints.
 
     Constraints:
-        1: sum(downloadSize) <= freeSpace + sum(removedSize)
-            --> sum(downloadSize) - sum(removedSize) <= freeSpace
-            When freeSpace + sum(removedSize) < 0, this become impossible to satisfy.
+        1: downloadSize <= freeSpace + removedSize
+            --> downloadSize - removedSize <= freeSpace
+            When freeSpace + removedSize < 0, this become impossible to satisfy.
             So the algorithm should delete all remove candidates to free up space.
         2: total download <= qBittorrent max_active_downloads
 
@@ -408,14 +408,13 @@ class MPSolver:
                 "value": solver.ObjectiveValue(),
             }
             value = map(solver.Value, pool)
-            self.removeList = tuple(t for t, v in zip(self.removeCand, value) if v)
-            self.downloadList = tuple(t for t, v in zip(self.downloadCand, value) if v)
+            self.removeList = tuple(t for t in self.removeCand if next(value))
+            self.downloadList = tuple(t for t in self.downloadCand if next(value))
         else:
             self.status = solver.StatusName(status)
 
     def report(self):
         sepSlim = "-" * 50
-        maxAvailSpace = self.freeSpace + self.removeCandSize
         removeSize = sum(i.size for i in self.removeList)
         downloadSize = sum(i.size for i in self.downloadList)
         finalFreeSpace = self.freeSpace + removeSize - downloadSize
@@ -438,7 +437,7 @@ class MPSolver:
         print(
             "Disk free space: {}. Max avail space: {}.".format(
                 humansize(self.freeSpace),
-                humansize(maxAvailSpace),
+                humansize(self.freeSpace + self.removeCandSize),
             )
         )
         for v in self.removeCand:
@@ -494,10 +493,9 @@ class Log(list):
 
         try:
             with logfile.open(mode="r+", encoding="utf-8") as f:
-                try:
-                    oldLog = f.readlines()[2:]
-                except IndexError:
-                    oldLog = ()
+                oldLog = iter(f.readlines())
+                for _ in range(2):
+                    next(oldLog, None)
                 f.seek(0)
                 f.write(header)
                 f.writelines(content)
