@@ -36,6 +36,7 @@ class qBittorrent:
 
         self.upSpeedThresh, self.dlSpeedThresh = (int(i * byteUnit["MiB"]) for i in speedThresh)
         self.spaceQuota = int(spaceQuota * byteUnit["GiB"])
+        self._preferences = None
 
         self.datafile = datafile
         self.data = self._load_data()
@@ -48,14 +49,14 @@ class qBittorrent:
         )
 
     def get_preference(self, key: str):
-        if not hasattr(self, "_preferences"):
+        if self._preferences is None:
             self._preferences = self._request("app/preferences").json()
         return self._preferences[key]
 
     def _request(self, path: str, **kwargs):
-        r = requests.get(urljoin(self.api_base, path), **kwargs, timeout=7)
-        r.raise_for_status()
-        return r
+        res = requests.get(urljoin(self.api_base, path), **kwargs, timeout=7)
+        res.raise_for_status()
+        return res
 
     def _load_data(self):
         """Load Data object from pickle."""
@@ -209,9 +210,9 @@ class Data:
         except (TypeError, AttributeError):
             self.qBittorrentFrame = qBittorrentRow
         try:
-            difference = self.torrentFrame.columns.difference(torrentRow.columns)
-            if not difference.empty:
-                self.torrentFrame.drop(columns=difference, inplace=True, errors="ignore")
+            diff = self.torrentFrame.columns.difference(torrentRow.columns)
+            if not diff.empty:
+                self.torrentFrame.drop(columns=diff, inplace=True, errors="ignore")
                 self.torrentFrame.dropna(how="all", inplace=True)
             self.torrentFrame = self.torrentFrame.append(torrentRow)
         except (TypeError, AttributeError):
@@ -220,16 +221,21 @@ class Data:
         speeds = self.qBittorrentFrame.last("H").resample("T").bfill().diff().mean().floordiv(60)
         return speeds["upload"], speeds["download"]
 
-    def get_slows(self) -> pd.Index:
+    def get_slows(self):
         """Discover the slowest torrents using jenks natural breaks method."""
-        from jenkspy import jenks_breaks
-
         speeds = self.torrentFrame.last("D").resample("T").bfill().diff().mean()
-        try:
-            breaks = jenks_breaks(speeds, nb_class=min(speeds.count().item() - 1, 3))[1]
-        except Exception as e:
-            print("Jenkspy failed:", e)
+        speeds.dropna(inplace=True)
+
+        c = speeds.size - 1
+        if c >= 2:
+            from jenkspy import jenks_breaks
+
+            if c > 3:
+                c = 3
+            breaks = jenks_breaks(speeds, nb_class=c)[1]
+        else:
             breaks = speeds.mean()
+
         return speeds.loc[speeds <= breaks].index
 
 
@@ -367,20 +373,21 @@ class MPSolver:
     """
 
     def __init__(self, *, removeCand, downloadCand, qb: qBittorrent):
-        self.removeCand = tuple(removeCand)
-        self.downloadCand = tuple(downloadCand)
-        self.removeCandSize = sum(i.size for i in self.removeCand)
-        self.qb = qb
-        self.freeSpace = qb.freeSpace
-        self.status = None
-        self.maxDownloads = float("inf")
         self.removeList = self.downloadList = ()
+        self.downloadCand = tuple(downloadCand)
+        self.freeSpace = qb.freeSpace
+        if not self.downloadCand and self.freeSpace > 0:
+            return
 
+        self.removeCand = tuple(removeCand)
+        self.removeCandSize = sum(i.size for i in self.removeCand)
         if self.freeSpace < -self.removeCandSize:
             self.removeList = self.removeCand
-        elif self.downloadCand or self.freeSpace < 0:
-            self.maxDownloads = qb.get_preference("max_active_downloads")
-            self._solve()
+            return
+
+        self.qb = qb
+        self.maxDownloads = qb.get_preference("max_active_downloads")
+        self._solve()
 
     def _solve(self):
         from ortools.sat.python import cp_model
@@ -413,6 +420,12 @@ class MPSolver:
             self.status = solver.StatusName(status)
 
     def report(self):
+        try:
+            status = self.status
+        except AttributeError:
+            print("Solver did not start: unnecessary conditions.")
+            return
+
         sepSlim = "-" * 50
         removeSize = sum(i.size for i in self.removeList)
         downloadSize = sum(i.size for i in self.downloadList)
@@ -443,14 +456,10 @@ class MPSolver:
             print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
 
         print(sepSlim)
-        if self.status is None:
-            print("CP-SAT solver did not start: unnecessary conditions.")
-        elif isinstance(self.status, dict):
-            print(
-                "{status} solution found in {walltime:.5f} seconds, objective value: {value}.".format_map(self.status)
-            )
+        if isinstance(status, dict):
+            print("{status} solution found in {walltime:.5f} seconds, objective value: {value}.".format_map(status))
         else:
-            print("CP-SAT solver cannot find an optimal solution. Status:", self.status)
+            print("CP-SAT solver cannot find an optimal solution. Status:", status)
 
         print(f"Free space left after operation: {humansize(self.freeSpace)} => {humansize(finalFreeSpace)}.")
 
@@ -559,7 +568,6 @@ def main():
             qb=qb,
         )
         solver.report()
-
         qb.remove_torrents(solver.removeList)
         mteam.download(solver.downloadList)
 
