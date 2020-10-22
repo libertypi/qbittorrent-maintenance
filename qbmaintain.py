@@ -10,7 +10,7 @@ import pandas as pd
 import requests
 from numpy import NaN
 
-debug = False
+_debug = False
 now = pd.Timestamp.now()
 byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGTP"), (1024 ** s for s in range(1, 6))) for u in us}
 
@@ -33,7 +33,7 @@ class qBittorrent:
             self.seedDir = Path(seedDir)
             self.watchDir = Path(watchDir)
         except TypeError:
-            if not debug:
+            if not _debug:
                 raise ValueError("seedDir and watchDir are not set properly.")
             self.seedDir = self.watchDir = None
 
@@ -69,7 +69,7 @@ class qBittorrent:
             assert data.integrity_test(), "Intergrity test failed."
         except (OSError, pickle.PickleError, AssertionError) as e:
             print(f"Loading data from '{self.datafile}' failed: {e}")
-            if not debug:
+            if not _debug:
                 try:
                     self.datafile.rename(f"{self.datafile}_{now.strftime('%y%m%d_%H%M%S')}")
                 except OSError:
@@ -90,7 +90,7 @@ class qBittorrent:
                     continue
                 print("Cleanup:", path.name)
                 try:
-                    if debug:
+                    if _debug:
                         pass
                     elif path.is_dir():
                         rmtree(path)
@@ -119,13 +119,13 @@ class qBittorrent:
 
     def get_remove_cands(self):
         oneDayAgo = pd.Timestamp.now(tz="UTC").timestamp() - 86400
-        for k in self.data.get_slows():
+        for k in self.data.get_slowest():
             v = self.torrents[k]
             if v["added_on"] < oneDayAgo:
                 yield self.Removable(hash=k, size=v["size"], peer=v["num_incomplete"], title=v["name"])
 
     def remove_torrents(self, removeList: tuple):
-        if removeList and not debug:
+        if removeList and not _debug:
             path = "torrents/delete"
             payload = {"hashes": "|".join(i.hash for i in removeList), "deleteFiles": True}
             self._request(path, params=payload)
@@ -155,13 +155,13 @@ class qBittorrent:
         paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
         if not paused.isdisjoint(i["state"] for i in self.torrents.values()):
             print("Resume torrents.")
-            if not debug:
+            if not _debug:
                 path = "torrents/resume"
                 payload = {"hashes": "all"}
                 self._request(path, params=payload)
 
     def dump_data(self):
-        if debug:
+        if _debug:
             return
         try:
             with self.datafile.open("wb") as f:
@@ -226,14 +226,14 @@ class Data:
         except (TypeError, AttributeError):
             self.torrentFrame = torrentRow
 
-        speeds = self.get_avgspeed(self.qBittorrentFrame, "1H")
+        speeds = self._get_avgspeed(self.qBittorrentFrame, "1H")
         return speeds["upload"], speeds["download"]
 
-    def get_slows(self):
+    def get_slowest(self):
         """Discover the slowest torrents using jenks natural breaks method."""
         from jenkspy import jenks_breaks
 
-        speeds = self.get_avgspeed(self.torrentFrame, "24H")
+        speeds = self._get_avgspeed(self.torrentFrame, "24H")
         speeds.dropna(inplace=True)
 
         try:
@@ -248,9 +248,9 @@ class Data:
         return speeds.loc[speeds <= breaks].index
 
     @classmethod
-    def get_avgspeed(cls, df: pd.DataFrame, last: str) -> pd.Series:
-        """Calculate average traffic speed in the given timespan."""
-        span = now - pd.Timedelta(last)
+    def _get_avgspeed(cls, df: pd.DataFrame, offset: str) -> pd.Series:
+        """Calculate average traffic speed in the final period of time based on offset."""
+        span = now - pd.Timedelta(offset)
         return df.truncate(before=span, copy=False).apply(cls._avg_speed)
 
     @staticmethod
@@ -265,18 +265,14 @@ class Data:
 
 
 class MTeam:
-    """An optimized MTeam downloader.
-
-    The per torrent minimum peer requirement subjects to:
-        peer = a * size(GiB) + b
-
-    Where (a, b) is defined in config file and passed through parameter "minPeer".
-    """
+    """A cumbersome MTeam downloader."""
 
     domain = "https://pt.m-team.cc"
     Torrent = namedtuple("Torrent", ("tid", "size", "peer", "title", "link"))
 
     def __init__(self, *, feeds: tuple, account: tuple, minPeer: tuple, qb: qBittorrent):
+        """The minimum peer requirement subjects to: Peer >= A * Size(GiB) + B
+        Where (A, B) is defined in config file and passed via "minPeer"."""
         self.feeds = feeds
         self.account = account
         self.qb = qb
@@ -372,7 +368,7 @@ class MTeam:
 
     def download(self, downloadList: tuple):
         for t in downloadList:
-            if not debug:
+            if not _debug:
                 r = self._get(t.link)
                 if r is None or not self.qb.add_torrent(f"{t.tid}.torrent", r.content):
                     print("Failed:", t.title)
@@ -394,11 +390,11 @@ class MPSolver:
         2: total download <= qBittorrent max_active_downloads
 
     Objective:
-        Maximize: sum(downloadPeer) - sum(removedPeer) * 0.5
+        Maximize: downloadPeer * 2 - removedPeer
     """
 
     def __init__(self, *, removeCand, downloadCand, qb: qBittorrent):
-        self.removeList = self.downloadList = ()
+        self.downloadList = self.removeList = ()
         self.downloadCand = tuple(downloadCand)
         self.freeSpace = qb.freeSpace
         if not self.downloadCand and self.freeSpace > 0:
@@ -419,14 +415,17 @@ class MPSolver:
 
         model = cp_model.CpModel()
 
-        sizeCoef = [-t.size for t in self.removeCand]
-        peerCoef = [-t.peer for t in self.removeCand]
-        sizeCoef.extend(t.size for t in self.downloadCand)
-        peerCoef.extend(t.peer * 2 for t in self.downloadCand)
-        pool = [model.NewBoolVar(f"{i}") for i in range(len(sizeCoef))]
+        sizeCoef = [t.size for t in self.downloadCand]
+        peerCoef = [t.peer * 2 for t in self.downloadCand]
+        pool = [model.NewBoolVar(f"DL_{i}") for i in range(len(sizeCoef))]
 
         if isinstance(self.maxDownloads, int) and self.maxDownloads > 0:
             model.Add(cp_model.LinearExpr.Sum(pool) <= self.maxDownloads)
+
+        sizeCoef.extend(-t.size for t in self.removeCand)
+        peerCoef.extend(-t.peer for t in self.removeCand)
+        pool.extend(model.NewBoolVar(f"RM_{i}") for i in range(len(self.removeCand)))
+
         model.Add(cp_model.LinearExpr.ScalProd(pool, sizeCoef) <= self.freeSpace)
         model.Maximize(cp_model.LinearExpr.ScalProd(pool, peerCoef))
 
@@ -440,8 +439,8 @@ class MPSolver:
                 "value": solver.ObjectiveValue(),
             }
             value = map(solver.BooleanValue, pool)
-            self.removeList = tuple(t for t in self.removeCand if next(value))
             self.downloadList = tuple(t for t in self.downloadCand if next(value))
+            self.removeList = tuple(t for t in self.removeCand if next(value))
         else:
             self.status = solver.StatusName(status)
 
@@ -520,7 +519,7 @@ class Log(list):
         header = "{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", sep)
         content = reversed(self)
 
-        if debug:
+        if _debug:
             print(sep)
             print(header, *content, sep="", end="")
             return
@@ -554,38 +553,38 @@ def humansize(size: int):
 
 
 def main():
-    import qbconfig
+    from qbconfig import Config
 
-    global debug
-    config = qbconfig.Config
+    global _debug
 
     for arg in argv[1:]:
         if arg.startswith("-d"):
-            debug = True
+            _debug = True
         elif arg.startswith("-r"):
-            config = qbconfig.RemoteConfig
-            debug = True
+            from qbconfig import RemoteConfig as Config
+
+            _debug = True
 
     script_dir = Path(__file__).parent
     datafile = script_dir / "data"
     logfile = script_dir / "qb-maintenance.log"
 
     qb = qBittorrent(
-        host=config.qBittorrentHost,
-        seedDir=config.seedDir,
-        watchDir=config.watchDir,
-        speedThresh=config.speedThresh,
-        spaceQuota=config.spaceQuota,
+        host=Config.qBittorrentHost,
+        seedDir=Config.seedDir,
+        watchDir=Config.watchDir,
+        speedThresh=Config.speedThresh,
+        spaceQuota=Config.spaceQuota,
         datafile=datafile,
     )
     qb.clean_seedDir()
 
-    if qb.need_action() or debug:
+    if qb.need_action() or _debug:
 
         mteam = MTeam(
-            feeds=config.mteamFeeds,
-            account=config.mteamAccount,
-            minPeer=config.newTorrentMinPeer,
+            feeds=Config.mteamFeeds,
+            account=Config.mteamAccount,
+            minPeer=Config.newTorrentMinPeer,
             qb=qb,
         )
         solver = MPSolver(
