@@ -406,7 +406,7 @@ class MPSolver:
                 "walltime": solver.WallTime(),
                 "value": solver.ObjectiveValue(),
             }
-            value = map(solver.Value, pool)
+            value = map(solver.BooleanValue, pool)
             self.removeList = tuple(t for t in self.removeCand if next(value))
             self.downloadList = tuple(t for t in self.downloadCand if next(value))
         else:
