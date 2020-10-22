@@ -8,7 +8,10 @@ from urllib.parse import urljoin
 
 import pandas as pd
 import requests
+from numpy import NaN
 
+debug = False
+now = pd.Timestamp.now()
 byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGTP"), (1024 ** s for s in range(1, 6))) for u in us}
 
 
@@ -54,7 +57,7 @@ class qBittorrent:
         return self._preferences[key]
 
     def _request(self, path: str, **kwargs):
-        res = requests.get(urljoin(self.api_base, path), **kwargs, timeout=7)
+        res = requests.get(self.api_base + path, **kwargs, timeout=7)
         res.raise_for_status()
         return res
 
@@ -68,7 +71,7 @@ class qBittorrent:
             print(f"Loading data from '{self.datafile}' failed: {e}")
             if not debug:
                 try:
-                    self.datafile.rename(f"{self.datafile}_{pd.Timestamp.now().strftime('%y%m%d_%H%M%S')}")
+                    self.datafile.rename(f"{self.datafile}_{now.strftime('%y%m%d_%H%M%S')}")
                 except OSError:
                     pass
             data = Data()
@@ -201,9 +204,14 @@ class Data:
     def record(self, qb: qBittorrent):
         """Record qBittorrent traffic data to pandas DataFrame. Returns the last hour avg UL/DL speeds."""
 
-        now = (pd.Timestamp.now(),)
-        qBittorrentRow = pd.DataFrame({"upload": qb.state["alltime_ul"], "download": qb.state["alltime_dl"]}, index=now)
-        torrentRow = pd.DataFrame({k: v["uploaded"] for k, v in qb.torrents.items()}, index=now)
+        qBittorrentRow = pd.DataFrame(
+            {"upload": qb.state["alltime_ul"], "download": qb.state["alltime_dl"]},
+            index=(now,),
+        )
+        torrentRow = pd.DataFrame(
+            {k: v["uploaded"] for k, v in qb.torrents.items()},
+            index=(now,),
+        )
 
         try:
             self.qBittorrentFrame = self.qBittorrentFrame.last("7D").append(qBittorrentRow)
@@ -218,25 +226,42 @@ class Data:
         except (TypeError, AttributeError):
             self.torrentFrame = torrentRow
 
-        speeds = self.qBittorrentFrame.last("H").resample("T").bfill().diff().mean().floordiv(60)
+        speeds = self.get_avgspeed(self.qBittorrentFrame, "1H")
         return speeds["upload"], speeds["download"]
 
     def get_slows(self):
         """Discover the slowest torrents using jenks natural breaks method."""
-        speeds = self.torrentFrame.last("D").resample("T").bfill().diff().mean()
+        from jenkspy import jenks_breaks
+
+        speeds = self.get_avgspeed(self.torrentFrame, "24H")
         speeds.dropna(inplace=True)
 
-        c = speeds.size - 1
-        if c >= 2:
-            from jenkspy import jenks_breaks
-
+        try:
+            c = speeds.size - 1
             if c > 3:
                 c = 3
             breaks = jenks_breaks(speeds, nb_class=c)[1]
-        else:
+        except Exception as e:
+            print("Jenkspy failed:", e)
             breaks = speeds.mean()
 
         return speeds.loc[speeds <= breaks].index
+
+    @classmethod
+    def get_avgspeed(cls, df: pd.DataFrame, last: str) -> pd.Series:
+        """Calculate average traffic speed in the given timespan."""
+        span = now - pd.Timedelta(last)
+        return df.truncate(before=span, copy=False).apply(cls._avg_speed)
+
+    @staticmethod
+    def _avg_speed(series: pd.Series):
+        lo = series.first_valid_index()
+        if lo is not None:
+            hi = series.last_valid_index()
+            t = (hi - lo).total_seconds()
+            if t > 0:
+                return (series[hi] - series[lo]) // t
+        return NaN
 
 
 class MTeam:
@@ -277,9 +302,9 @@ class MTeam:
     def _login(self):
         if not hasattr(self, "loginParam"):
             self.loginParam = {
-                "url": urljoin(self.domain, "takelogin.php"),
+                "url": f"{self.domain}/takelogin.php",
                 "data": {"username": self.account[0], "password": self.account[1]},
-                "headers": {"referer": urljoin(self.domain, "login.php")},
+                "headers": {"referer": f"{self.domain}/login.php"},
             }
         self.session.post(**self.loginParam)
 
@@ -400,8 +425,9 @@ class MPSolver:
         peerCoef.extend(t.peer * 2 for t in self.downloadCand)
         pool = [model.NewBoolVar(f"{i}") for i in range(len(sizeCoef))]
 
+        if isinstance(self.maxDownloads, int) and self.maxDownloads > 0:
+            model.Add(cp_model.LinearExpr.Sum(pool) <= self.maxDownloads)
         model.Add(cp_model.LinearExpr.ScalProd(pool, sizeCoef) <= self.freeSpace)
-        model.Add(cp_model.LinearExpr.Sum(pool) <= self.maxDownloads)
         model.Maximize(cp_model.LinearExpr.ScalProd(pool, peerCoef))
 
         solver = cp_model.CpSolver()
@@ -524,7 +550,7 @@ def humansize(size: int):
                 return f"{size:.2f} {suffix}"
     except TypeError:
         pass
-    return "---"
+    return "NaN"
 
 
 def main():
@@ -577,7 +603,6 @@ def main():
 
 
 log = Log()
-debug = False
 
 if __name__ == "__main__":
     main()
