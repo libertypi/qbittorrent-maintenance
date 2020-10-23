@@ -213,9 +213,12 @@ class Data:
         )
 
         try:
-            self.qBittorrentFrame = self.qBittorrentFrame.last("7D").append(qBittorrentRow)
+            self.qBittorrentFrame = self.qBittorrentFrame.truncate(
+                before=(now - pd.Timedelta("1H")), copy=False
+            ).append(qBittorrentRow)
         except (TypeError, AttributeError):
             self.qBittorrentFrame = qBittorrentRow
+
         try:
             diff = self.torrentFrame.columns.difference(torrentRow.columns)
             if not diff.empty:
@@ -225,14 +228,27 @@ class Data:
         except (TypeError, AttributeError):
             self.torrentFrame = torrentRow
 
-        speeds = self._get_avgspeed(self.qBittorrentFrame, "1H")
+        lo = self.qBittorrentFrame.iloc[0]
+        hi = self.qBittorrentFrame.iloc[-1]
+        speeds = (hi - lo) // (hi.name - lo.name).total_seconds()
         return speeds["upload"], speeds["download"]
 
     def get_slowest(self):
         """Discover the slowest torrents using jenks natural breaks."""
         from jenkspy import jenks_breaks
 
-        speeds = self._get_avgspeed(self.torrentFrame, "24H")
+        # truncate the dataframe to the last N time units
+        df = self.torrentFrame = self.torrentFrame.truncate(
+            before=(now - pd.Timedelta("24H")),
+            copy=False,
+        )
+
+        # calculate the difference between the last and first valid index per row
+        t = df.index[-1] - df.apply(pd.Series.first_valid_index)
+
+        # bfill() will back fill NaNs, so iloc[0] can give us the first valid value per row
+        # calculate the value difference and return the speed: v = s/t
+        speeds = (df.iloc[-1] - df.bfill().iloc[0]) // t.dt.total_seconds()
         speeds.dropna(inplace=True)
 
         try:
@@ -245,20 +261,6 @@ class Data:
             breaks = speeds.mean()
 
         return speeds.loc[speeds <= breaks].index
-
-    @staticmethod
-    def _get_avgspeed(df: pd.DataFrame, offset: str) -> pd.Series:
-        """Calculate average traffic speed in the final period of time based on offset."""
-
-        # truncate the dataframe to the last N time units
-        df = df.truncate(before=(now - pd.Timedelta(offset)), copy=False)
-
-        # calculate the difference between the last and first valid index per row
-        t = df.index[-1] - df.apply(pd.Series.first_valid_index)
-
-        # bfill() will back fill NaNs, so iloc[0] can give us the first valid value per row
-        # calculate the value difference and return the speed: v = s/t
-        return (df.iloc[-1] - df.bfill().iloc[0]) // t.dt.total_seconds()
 
 
 class MTeam:
@@ -412,16 +414,15 @@ class MPSolver:
 
         model = cp_model.CpModel()
 
-        sizeCoef = [t.size for t in self.downloadCand]
-        peerCoef = [t.peer * 2 for t in self.downloadCand]
-        pool = [model.NewBoolVar(f"DL_{i}") for i in range(len(sizeCoef))]
-
+        pool = [model.NewBoolVar(f"DL_{i}") for i in range(len(self.downloadCand))]
         if isinstance(self.maxDownloads, int) and self.maxDownloads > 0:
             model.Add(cp_model.LinearExpr.Sum(pool) <= self.maxDownloads)
 
+        pool.extend(model.NewBoolVar(f"RM_{i}") for i in range(len(self.removeCand)))
+        sizeCoef = [t.size for t in self.downloadCand]
+        peerCoef = [t.peer * 2 for t in self.downloadCand]
         sizeCoef.extend(-t.size for t in self.removeCand)
         peerCoef.extend(-t.peer for t in self.removeCand)
-        pool.extend(model.NewBoolVar(f"RM_{i}") for i in range(len(self.removeCand)))
 
         model.Add(cp_model.LinearExpr.ScalProd(pool, sizeCoef) <= self.freeSpace)
         model.Maximize(cp_model.LinearExpr.ScalProd(pool, peerCoef))
@@ -581,7 +582,7 @@ def main():
 
     script_dir = Path(__file__).parent
     datafile = script_dir / "data"
-    logfile = script_dir / "qb-maintenance.log"
+    logfile = script_dir / "logfile.log"
     configfile = script_dir / "config.ini"
 
     config = ConfigParser()
@@ -605,7 +606,7 @@ def main():
         seedDir=basic["seed_dir"] or None,
         watchDir=basic["watch_dir"] or None,
         speedThresh=(basic.getfloat("upspeed_thresh"), basic.getfloat("dlspeed_thresh")),
-        spaceQuota=basic.getint("space_quota"),
+        spaceQuota=basic.getfloat("space_quota"),
         datafile=datafile,
     )
     qb.clean_seedDir()
