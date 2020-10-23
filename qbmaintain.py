@@ -9,7 +9,6 @@ from urllib.parse import urljoin
 
 import pandas as pd
 import requests
-from numpy import NaN
 
 _debug = False
 now = pd.Timestamp.now()
@@ -230,7 +229,7 @@ class Data:
         return speeds["upload"], speeds["download"]
 
     def get_slowest(self):
-        """Discover the slowest torrents using jenks natural breaks method."""
+        """Discover the slowest torrents using jenks natural breaks."""
         from jenkspy import jenks_breaks
 
         speeds = self._get_avgspeed(self.torrentFrame, "24H")
@@ -247,20 +246,19 @@ class Data:
 
         return speeds.loc[speeds <= breaks].index
 
-    @classmethod
-    def _get_avgspeed(cls, df: pd.DataFrame, offset: str) -> pd.Series:
-        """Calculate average traffic speed in the final period of time based on offset."""
-        return df.truncate(before=(now - pd.Timedelta(offset)), copy=False).apply(cls._avg_speed)
-
     @staticmethod
-    def _avg_speed(series: pd.Series):
-        lo = series.first_valid_index()
-        if lo is not None:
-            hi = series.last_valid_index()
-            t = (hi - lo).total_seconds()
-            if t > 0:
-                return (series[hi] - series[lo]) // t
-        return NaN
+    def _get_avgspeed(df: pd.DataFrame, offset: str) -> pd.Series:
+        """Calculate average traffic speed in the final period of time based on offset."""
+
+        # truncate the dataframe to the last N time units
+        df = df.truncate(before=(now - pd.Timedelta(offset)), copy=False)
+
+        # calculate the difference between the last and first valid index per row
+        t = df.index[-1] - df.apply(pd.Series.first_valid_index)
+
+        # bfill() will back fill NaNs, so iloc[0] can give us the first valid value per row
+        # calculate the value difference and return the speed: v = s/t
+        return (df.iloc[-1] - df.bfill().iloc[0]) // t.dt.total_seconds()
 
 
 class MTeam:
@@ -524,7 +522,7 @@ class Log(list):
             return
 
         try:
-            with logfile.open(mode="r+", encoding="utf-8") as f:
+            with open(logfile, mode="r+", encoding="utf-8") as f:
                 for _ in range(2):
                     f.readline()
                 backup = f.read()
@@ -534,7 +532,7 @@ class Log(list):
                 f.write(backup)
                 f.truncate()
         except FileNotFoundError:
-            with logfile.open(mode="w", encoding="utf-8") as f:
+            with open(logfile, mode="w", encoding="utf-8") as f:
                 f.write(header)
                 f.writelines(content)
 
@@ -551,7 +549,8 @@ def humansize(size: int):
     return "NaN"
 
 
-def write_config_default(configfile: Path):
+def init_config(configfile: Path):
+    """Create config file with default values."""
     config = ConfigParser()
     config["DEFAULT"] = {
         "host": "http://localhost",
@@ -587,17 +586,19 @@ def main():
 
     config = ConfigParser()
     if not config.read(configfile, encoding="utf-8"):
-        write_config_default(configfile)
+        init_config(configfile)
         print("Please edit config.ini before running this script again.")
         return
 
     basic = config["DEFAULT"]
     for arg in argv[1:]:
-        if arg.startswith("-d"):
+        if arg == "-d":
             _debug = True
-        elif arg.startswith("-r"):
+        elif arg == "-r":
             _debug = True
             basic = config["OVERRIDE"]
+        else:
+            raise ValueError(f"Unrecognized argument: '{arg}'")
 
     qb = qBittorrent(
         host=basic["host"],
