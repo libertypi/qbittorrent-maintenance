@@ -1,5 +1,6 @@
 import pickle
 from collections import namedtuple
+from configparser import ConfigParser
 from pathlib import Path
 from re import compile as re_compile
 from shutil import disk_usage, rmtree
@@ -34,7 +35,7 @@ class qBittorrent:
             self.watchDir = Path(watchDir)
         except TypeError:
             if not _debug:
-                raise ValueError("seedDir and watchDir are not set properly.")
+                raise ValueError("seed_dir and watch_dir are not set properly.")
             self.seedDir = self.watchDir = None
 
         self.upSpeedThresh, self.dlSpeedThresh = (int(i * byteUnit["MiB"]) for i in speedThresh)
@@ -107,7 +108,6 @@ class qBittorrent:
             realSpace = max(realSpace, disk_usage(self.seedDir).free)
         except TypeError:
             pass
-
         self.freeSpace = realSpace - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
 
         return (
@@ -250,8 +250,7 @@ class Data:
     @classmethod
     def _get_avgspeed(cls, df: pd.DataFrame, offset: str) -> pd.Series:
         """Calculate average traffic speed in the final period of time based on offset."""
-        span = now - pd.Timedelta(offset)
-        return df.truncate(before=span, copy=False).apply(cls._avg_speed)
+        return df.truncate(before=(now - pd.Timedelta(offset)), copy=False).apply(cls._avg_speed)
 
     @staticmethod
     def _avg_speed(series: pd.Series):
@@ -270,7 +269,7 @@ class MTeam:
     domain = "https://pt.m-team.cc"
     Torrent = namedtuple("Torrent", ("tid", "size", "peer", "title", "link"))
 
-    def __init__(self, *, feeds: tuple, account: tuple, minPeer: tuple, qb: qBittorrent):
+    def __init__(self, *, feeds: list, account: tuple, minPeer: tuple, qb: qBittorrent):
         """The minimum peer requirement subjects to: Peer >= A * Size(GiB) + B
         Where (A, B) is defined in config file and passed via "minPeer"."""
         self.feeds = feeds
@@ -397,7 +396,7 @@ class MPSolver:
         self.downloadList = self.removeList = ()
         self.downloadCand = tuple(downloadCand)
         self.freeSpace = qb.freeSpace
-        if not self.downloadCand and self.freeSpace > 0:
+        if not (self.downloadCand or self.freeSpace < 0 or _debug):
             return
 
         self.removeCand = tuple(removeCand)
@@ -526,13 +525,13 @@ class Log(list):
 
         try:
             with logfile.open(mode="r+", encoding="utf-8") as f:
-                oldLog = iter(f.readlines())
                 for _ in range(2):
-                    next(oldLog, None)
+                    f.readline()
+                backup = f.read()
                 f.seek(0)
                 f.write(header)
                 f.writelines(content)
-                f.writelines(oldLog)
+                f.write(backup)
                 f.truncate()
         except FileNotFoundError:
             with logfile.open(mode="w", encoding="utf-8") as f:
@@ -552,39 +551,71 @@ def humansize(size: int):
     return "NaN"
 
 
+def write_config_default(configfile: Path):
+    config = ConfigParser()
+    config["DEFAULT"] = {
+        "host": "http://localhost",
+        "seed_dir": "",
+        "watch_dir": "",
+        "space_quota": "50",
+        "upspeed_thresh": "2.6",
+        "dlspeed_thresh": "6",
+    }
+    config["MTEAM"] = {
+        "account": "",
+        "password": "",
+        "peer_slope": "0.3",
+        "peer_intercept": "30",
+        "feeds": "\nexample1.php\nexample2.php",
+    }
+    config["OVERRIDE"] = {
+        "host": "http://localhost",
+        "seed_dir": "",
+        "watch_dir": "",
+    }
+    with configfile.open("w", encoding="utf-8") as f:
+        config.write(f)
+
+
 def main():
-    from qbconfig import Config
-
     global _debug
-
-    for arg in argv[1:]:
-        if arg.startswith("-d"):
-            _debug = True
-        elif arg.startswith("-r"):
-            from qbconfig import RemoteConfig as Config
-
-            _debug = True
 
     script_dir = Path(__file__).parent
     datafile = script_dir / "data"
     logfile = script_dir / "qb-maintenance.log"
+    configfile = script_dir / "config.ini"
+
+    config = ConfigParser()
+    if not config.read(configfile, encoding="utf-8"):
+        write_config_default(configfile)
+        print("Please edit config.ini before running this script again.")
+        return
+
+    basic = config["DEFAULT"]
+    for arg in argv[1:]:
+        if arg.startswith("-d"):
+            _debug = True
+        elif arg.startswith("-r"):
+            _debug = True
+            basic = config["OVERRIDE"]
 
     qb = qBittorrent(
-        host=Config.qBittorrentHost,
-        seedDir=Config.seedDir,
-        watchDir=Config.watchDir,
-        speedThresh=Config.speedThresh,
-        spaceQuota=Config.spaceQuota,
+        host=basic["host"],
+        seedDir=basic["seed_dir"] or None,
+        watchDir=basic["watch_dir"] or None,
+        speedThresh=(basic.getfloat("upspeed_thresh"), basic.getfloat("dlspeed_thresh")),
+        spaceQuota=basic.getint("space_quota"),
         datafile=datafile,
     )
     qb.clean_seedDir()
 
     if qb.need_action() or _debug:
 
+        mt = config["MTEAM"]
         mteam = MTeam(
-            feeds=Config.mteamFeeds,
-            account=Config.mteamAccount,
-            minPeer=Config.newTorrentMinPeer,
+            feeds=mt["feeds"].split(),
+            account=(mt["account"], mt["password"]),
+            minPeer=(mt.getfloat("peer_slope"), mt.getfloat("peer_intercept")),
             qb=qb,
         )
         solver = MPSolver(

@@ -1,7 +1,7 @@
-qbconfig.py
 api.txt
 *.log
 data
+config.ini
 .vscode/
 
 # Byte-compiled / optimized / DLL files
