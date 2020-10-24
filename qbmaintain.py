@@ -237,18 +237,16 @@ class Data:
         """Discover the slowest torrents using jenks natural breaks."""
         from jenkspy import jenks_breaks
 
-        # truncate the dataframe to the last N time units
         df = self.torrentFrame = self.torrentFrame.truncate(
             before=(now - pd.Timedelta("24H")),
             copy=False,
         )
+        # The first valid datetime index per column
+        lo = df.apply(pd.Series.first_valid_index)
+        # The last row, as series
+        hi = df.iloc[-1]
 
-        # calculate the difference between the last and first valid index per row
-        t = df.index[-1] - df.apply(pd.Series.first_valid_index)
-
-        # bfill() will back fill NaNs, so iloc[0] can give us the first valid value per row
-        # calculate the value difference and return the speed: v = s/t
-        speeds = (df.iloc[-1] - df.bfill().iloc[0]) // t.dt.total_seconds()
+        speeds = (hi.values - df.lookup(lo, lo.index)) // (hi.name - lo).dt.total_seconds()
         speeds.dropna(inplace=True)
 
         try:
