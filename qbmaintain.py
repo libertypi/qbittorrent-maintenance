@@ -19,7 +19,7 @@ class qBittorrent:
 
     Removable = namedtuple("Removable", ("hash", "size", "peer", "title"))
 
-    def __init__(self, *, host: str, seedDir: str, watchDir: str, speedThresh: tuple, spaceQuota: int, datafile: Path):
+    def __init__(self, *, host: str, seedDir: str, speedThresh: tuple, spaceQuota: int, datafile: Path):
 
         self.api_base = urljoin(host, "api/v2/")
         maindata = self._request("sync/maindata").json()
@@ -31,11 +31,8 @@ class qBittorrent:
 
         try:
             self.seedDir = Path(seedDir)
-            self.watchDir = Path(watchDir)
         except TypeError:
-            if not _debug:
-                raise ValueError("seed_dir and watch_dir are not set properly.")
-            self.seedDir = self.watchDir = None
+            self.seedDir = None
 
         self.upSpeedThresh, self.dlSpeedThresh = (int(i * byteUnit["MiB"]) for i in speedThresh)
         self.spaceQuota = int(spaceQuota * byteUnit["GiB"])
@@ -46,7 +43,7 @@ class qBittorrent:
         self.upSpeed, self.dlSpeed = self.data.record(self)
 
         print(
-            "qBittorrent average speed last hour: UL: {}/s, DL: {}/s.".format(
+            "qBittorrent average speed last hour: UL: {}/s, DL: {}/s. ".format(
                 humansize(self.upSpeed), humansize(self.dlSpeed)
             )
         )
@@ -110,11 +107,24 @@ class qBittorrent:
         self.freeSpace = realSpace - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
 
         return (
-            0 <= self.upSpeed < self.upSpeedThresh
-            and 0 <= self.dlSpeed < self.dlSpeedThresh
-            and not self.state["use_alt_speed_limits"]
-            and self.state["up_rate_limit"] > self.upSpeedThresh
-        ) or self.freeSpace < 0
+            (
+                0 <= self.upSpeed < self.upSpeedThresh
+                and 0 <= self.dlSpeed < self.dlSpeedThresh
+                and not self.state["use_alt_speed_limits"]
+                and self.state["up_rate_limit"] > self.upSpeedThresh
+            )
+            or self.data.expires_in("3H")
+            or self.freeSpace < 0
+        )
+
+    def set_expire(self, offset: str):
+        """Set expiry alert based on offset."""
+        try:
+            expire = now + pd.Timedelta(offset)
+        except ValueError:
+            return
+        if not self.data.expiryAlert >= expire:
+            self.data.expiryAlert = expire
 
     def get_remove_cands(self):
         oneDayAgo = pd.Timestamp.now(tz="UTC").timestamp() - 86400
@@ -131,24 +141,10 @@ class qBittorrent:
         for v in removeList:
             log.record("Remove", v.size, v.title)
 
-    def add_torrent(self, filename: str, content: bytes) -> bool:
-        """Save torrent to watchdir."""
-        try:
-            path = self.watchDir / filename
-            with path.open("wb") as f:
-                f.write(content)
-        except OSError as e:
-            try:
-                if not self.watchDir.exists():
-                    self.watchDir.mkdir()
-                    return self.add_torrent(filename, content)
-            except OSError:
-                pass
-            msg = f"Saving '{filename}' to '{self.watchDir}' failed: {e}"
-            log.record("Error", None, msg)
-            print(msg)
-            return False
-        return True
+    def add_torrent(self, files: dict):
+        """Upload torrents. Raise HTTPError if failed."""
+        res = requests.post(self.api_base + "torrents/add", files=files)
+        res.raise_for_status()
 
     def resume_paused(self):
         paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
@@ -175,6 +171,7 @@ class Data:
     def __init__(self):
         self.qBittorrentFrame = pd.DataFrame()
         self.torrentFrame = pd.DataFrame()
+        self.expiryAlert = pd.NaT
         self.mteamHistory = set()
         self.init_session()
 
@@ -228,10 +225,20 @@ class Data:
         except (TypeError, AttributeError):
             self.torrentFrame = torrentRow
 
-        lo = self.qBittorrentFrame.iloc[0]
         hi = self.qBittorrentFrame.iloc[-1]
+        lo = self.qBittorrentFrame.iloc[0]
         speeds = (hi - lo) // (hi.name - lo.name).total_seconds()
         return speeds["upload"], speeds["download"]
+
+    def expires_in(self, offset: str) -> bool:
+        """Whether the latest free torrent is expiring during this period.
+
+        If the alert is at 12:00 and offset is 3H, returns True from 9:00 to 15:00."""
+        offset = pd.Timedelta(offset)
+        try:
+            return now - offset <= self.expiryAlert <= now + offset
+        except (AttributeError, TypeError):
+            self.expiryAlert = pd.NaT
 
     def get_slowest(self):
         """Discover the slowest torrents using jenks natural breaks."""
@@ -241,11 +248,8 @@ class Data:
             before=(now - pd.Timedelta("24H")),
             copy=False,
         )
-        # The first valid datetime index per column
-        lo = df.apply(pd.Series.first_valid_index)
-        # The last row, as series
         hi = df.iloc[-1]
-
+        lo = df.apply(pd.Series.first_valid_index)
         speeds = (hi.values - df.lookup(lo, lo.index)) // (hi.name - lo).dt.total_seconds()
         speeds.dropna(inplace=True)
 
@@ -265,7 +269,7 @@ class MTeam:
     """A cumbersome MTeam downloader."""
 
     domain = "https://pt.m-team.cc"
-    Torrent = namedtuple("Torrent", ("tid", "size", "peer", "title", "link"))
+    Torrent = namedtuple("Torrent", ("tid", "size", "peer", "title", "link", "expire"))
 
     def __init__(self, *, feeds: list, account: tuple, minPeer: tuple, qb: qBittorrent):
         """The minimum peer requirement subjects to: Peer >= A * Size(GiB) + B
@@ -306,10 +310,11 @@ class MTeam:
 
         re_download = re_compile(r"\bdownload\.php\?")
         re_details = re_compile(r"\bdetails\.php\?")
-        re_timelimit = re_compile(r"限時：[^日]*$")
         re_nondigit = re_compile(r"[^0-9]+")
         re_size = re_compile(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)")
         re_tid = re_compile(r"\bid=(?P<tid>[0-9]+)")
+        re_timelimit = re_compile(r"^\s*限時：")
+        transTable = str.maketrans({"日": "D", "時": "H", "分": "T"})
         cols = {}
         A, B = self.minPeer
 
@@ -349,30 +354,35 @@ class MTeam:
 
                     link = tr[colTitle].find("a", href=re_download)["href"]
                     tid = re_tid.search(link)["tid"]
-                    if (
-                        tid in self.history
-                        or tr[colTitle].find(string=re_timelimit)
-                        or tr[colUp].get_text(strip=True) == "0"
-                    ):
+                    if tid in self.history or tr[colUp].get_text(strip=True) == "0":
                         continue
+
+                    expire = tr[colTitle].find(string=re_timelimit)
+                    if expire:
+                        if "日" not in expire:
+                            continue
+                        expire = expire.split("：", 1)[1].translate(transTable)
 
                     title = tr[colTitle].find("a", href=re_details, string=True)
                     title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
 
-                    yield self.Torrent(tid=tid, size=size, peer=peer, title=title, link=link)
+                    yield self.Torrent(tid=tid, size=size, peer=peer, title=title, link=link, expire=expire)
                 except Exception as e:
                     print("Parsing page error:", e)
 
     def download(self, downloadList: tuple):
+        if not _debug:
+            try:
+                self.qb.add_torrent({t.tid: self._get(t.link).content for t in downloadList})
+            except (AttributeError, requests.HTTPError) as e:
+                print(f"Downloading torrents failed: {e}")
+                return
+
         for t in downloadList:
-            if not _debug:
-                r = self._get(t.link)
-                if r is None or not self.qb.add_torrent(f"{t.tid}.torrent", r.content):
-                    print("Failed:", t.title)
-                    continue
+            if t.expire:
+                self.qb.set_expire(t.expire)
             self.history.add(t.tid)
             log.record("Download", t.size, t.title)
-            print("Download:", t.title)
 
 
 class MPSolver:
@@ -411,16 +421,19 @@ class MPSolver:
         from ortools.sat.python import cp_model
 
         model = cp_model.CpModel()
+        downloadCand = self.downloadCand
+        removeCand = self.removeCand
 
-        pool = [model.NewBoolVar(f"DL_{i}") for i in range(len(self.downloadCand))]
+        sizeCoef = [t.size for t in downloadCand]
+        peerCoef = [t.peer * 2 for t in downloadCand]
+        pool = [model.NewBoolVar(f"DL_{i}") for i in range(len(downloadCand))]
+
         if isinstance(self.maxDownloads, int) and self.maxDownloads > 0:
             model.Add(cp_model.LinearExpr.Sum(pool) <= self.maxDownloads)
 
-        pool.extend(model.NewBoolVar(f"RM_{i}") for i in range(len(self.removeCand)))
-        sizeCoef = [t.size for t in self.downloadCand]
-        peerCoef = [t.peer * 2 for t in self.downloadCand]
-        sizeCoef.extend(-t.size for t in self.removeCand)
-        peerCoef.extend(-t.peer for t in self.removeCand)
+        sizeCoef.extend(-t.size for t in removeCand)
+        peerCoef.extend(-t.peer for t in removeCand)
+        pool.extend(model.NewBoolVar(f"RM_{i}") for i in range(len(removeCand)))
 
         model.Add(cp_model.LinearExpr.ScalProd(pool, sizeCoef) <= self.freeSpace)
         model.Maximize(cp_model.LinearExpr.ScalProd(pool, peerCoef))
@@ -435,8 +448,8 @@ class MPSolver:
                 "value": solver.ObjectiveValue(),
             }
             value = map(solver.BooleanValue, pool)
-            self.downloadList = tuple(t for t in self.downloadCand if next(value))
-            self.removeList = tuple(t for t in self.removeCand if next(value))
+            self.downloadList = tuple(t for t in downloadCand if next(value))
+            self.removeList = tuple(t for t in removeCand if next(value))
         else:
             self.status = solver.StatusName(status)
 
@@ -454,10 +467,15 @@ class MPSolver:
 
         print(sepSlim)
         print(
-            "Download candidates: {}. Total: {}. Limit: {}.".format(
+            "Download candidates: {}. Total: {}.".format(
                 len(self.downloadCand),
                 humansize(sum(i.size for i in self.downloadCand)),
+            )
+        )
+        print(
+            "Download limit: {}. Expire alert: {}.".format(
                 self.maxDownloads,
+                self.qb.data.expiryAlert,
             )
         )
         print(
@@ -500,7 +518,6 @@ class MPSolver:
             )
             for v in final:
                 print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
-        print(sepSlim)
 
 
 class Log(list):
@@ -554,7 +571,6 @@ def init_config(configfile: Path):
     config["DEFAULT"] = {
         "host": "http://localhost",
         "seed_dir": "",
-        "watch_dir": "",
         "space_quota": "50",
         "upspeed_thresh": "2.6",
         "dlspeed_thresh": "6",
@@ -569,7 +585,6 @@ def init_config(configfile: Path):
     config["OVERRIDE"] = {
         "host": "http://localhost",
         "seed_dir": "",
-        "watch_dir": "",
     }
     with configfile.open("w", encoding="utf-8") as f:
         config.write(f)
@@ -602,7 +617,6 @@ def main():
     qb = qBittorrent(
         host=basic["host"],
         seedDir=basic["seed_dir"] or None,
-        watchDir=basic["watch_dir"] or None,
         speedThresh=(basic.getfloat("upspeed_thresh"), basic.getfloat("dlspeed_thresh")),
         spaceQuota=basic.getfloat("space_quota"),
         datafile=datafile,
