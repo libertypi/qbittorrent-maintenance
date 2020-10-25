@@ -108,15 +108,15 @@ class qBittorrent:
         except TypeError:
             pass
         self.freeSpace = realSpace - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
+        expiryAlert = self.data.expiryAlert
 
         return (
-            (
-                0 <= self.upSpeed < self.upSpeedThresh
-                and 0 <= self.dlSpeed < self.dlSpeedThresh
-                and not self.state["use_alt_speed_limits"]
-                and self.state["up_rate_limit"] > self.upSpeedThresh
-            )
-            or self.has_alert()
+            0 <= self.upSpeed < self.upSpeedThresh
+            and 0 <= self.dlSpeed < self.dlSpeedThresh
+            and not self.state["use_alt_speed_limits"]
+            and self.state["up_rate_limit"] > self.upSpeedThresh
+            or expiryAlert
+            and expiryAlert[0] <= now + pd.Timedelta("3H")
             or self.freeSpace < 0
         )
 
@@ -136,19 +136,13 @@ class qBittorrent:
         for v in removeList:
             log.record("Remove", v.size, v.title)
 
-    def has_alert(self) -> bool:
-        """Return True if an alert is near or has alreadly passed.
+    def add_torrent(self, downloadList: tuple, contents: dict):
+        """Upload torrents and clear recent alerts.
 
         When a timelimited free torrent being added, an alert will be set on its expiry date.
         Alerts will be deleted only when new downloads were made.
         """
-        try:
-            return self.data.expiryAlert[0] <= now + pd.Timedelta("3H")
-        except IndexError:
-            return False
 
-    def add_torrent(self, downloadList: tuple, contents: dict):
-        """Upload torrents and clear recent alerts."""
         if not contents:
             return
         try:
@@ -168,8 +162,8 @@ class qBittorrent:
             except ValueError:
                 pass
 
-        # when download is made, clear alerts to 3 hours ahead.
-        thresh = now + pd.Timedelta("3H")
+        # when download is made, clear alerts up to 1 day.
+        thresh = now + pd.Timedelta("1D")
         while expiryAlert and expiryAlert[0] <= thresh:
             heappop(expiryAlert)
 
@@ -198,8 +192,8 @@ class Data:
     def __init__(self):
         self.qBittorrentFrame = pd.DataFrame()
         self.torrentFrame = pd.DataFrame()
-        self.expiryAlert = []
         self.mteamHistory = set()
+        self.expiryAlert = []
         self.init_session()
 
     def init_session(self):
