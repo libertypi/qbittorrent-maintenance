@@ -59,46 +59,23 @@ class AlertQue(list):
             heappop(self)
 
 
-class Data:
-    def __init__(self):
-        self.qBittorrentFrame = pd.DataFrame()
-        self.torrentFrame = pd.DataFrame()
-        self.mteamHistory = set()
-        self.alertQue = AlertQue()
-        self.init_session()
-
-    def init_session(self):
-        """Initialize a new requests session."""
-        self.session = requests.session()
-        self.session.headers.update(
-            {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) Gecko/20100101 Firefox/80.0"}
-        )
-        return self.session
-
-    def integrity_test(self):
-        try:
-            return all(
-                isinstance(x, y)
-                for x, y in (
-                    (self.qBittorrentFrame, pd.DataFrame),
-                    (self.torrentFrame, pd.DataFrame),
-                    (self.alertQue, AlertQue),
-                    (self.mteamHistory, set),
-                    (self.session, requests.Session),
-                )
-            )
-        except AttributeError:
-            return False
-
-
 class qBittorrent:
+
+    template = (
+        ("speedFrame", pd.DataFrame),
+        ("torrentFrame", pd.DataFrame),
+        ("alertQue", AlertQue),
+        ("mteamHistory", set),
+        ("session", requests.Session),
+    )
+
     def __init__(self, *, host: str, seedDir: str, speedThresh: tuple, spaceQuota: int, datafile: Path):
 
         self.api_base = urljoin(host, "api/v2/")
         maindata = self._request("sync/maindata").json()
 
-        self.state = maindata["server_state"]
-        self.torrents = maindata["torrents"]
+        self.state: dict = maindata["server_state"]
+        self.torrents: dict = maindata["torrents"]
         if self.state["connection_status"] not in ("connected", "firewalled"):
             raise RuntimeError("qBittorrent is not connected to the internet.")
 
@@ -113,22 +90,45 @@ class qBittorrent:
         self._preferences = None
 
         self.datafile = datafile
-        self.data = self._load_data()
-        self.upSpeed, self.dlSpeed = self._record()
+        self._load_data()
+        self._record()
 
-        print(
-            "qBittorrent average speed last hour: UL: {}/s, DL: {}/s. ".format(
-                humansize(self.upSpeed), humansize(self.dlSpeed)
-            )
+    def _load_data(self):
+        """Load Data object from pickle."""
+        try:
+            with self.datafile.open(mode="rb") as f:
+                data = pickle.load(f)
+
+            if not all(isinstance(data[x], y) for x, y in self.template):
+                raise Exception("Data corrupted.")
+
+            self.speedFrame: pd.DataFrame = data["speedFrame"]
+            self.torrentFrame: pd.DataFrame = data["torrentFrame"]
+            self.alertQue: AlertQue = data["alertQue"]
+            self.mteamHistory: set = data["mteamHistory"]
+            self.session: requests.Session = data["session"]
+
+        except Exception as e:
+            if self.datafile.exists() and not _debug:
+                print(f"Loading data from '{self.datafile}' failed: {e}")
+                self.datafile.rename(f"{self.datafile}_{now.strftime('%y%m%d_%H%M%S')}")
+
+            for name, obj in self.template:
+                setattr(self, name, obj())
+            self.init_session()
+
+    def init_session(self):
+        """Initialize a new requests session."""
+        self.session = requests.session()
+        self.session.headers.update(
+            {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) Gecko/20100101 Firefox/80.0"}
         )
+        return self.session
 
     def _record(self):
-        """Record qBittorrent traffic data to pandas DataFrame.
+        """Record qBittorrent traffic data to pandas DataFrame."""
 
-        Calculate the last hour avg UL/DL speeds."""
-
-        data = self.data
-        qBittorrentRow = pd.DataFrame(
+        speedRow = pd.DataFrame(
             {"upload": self.state["alltime_ul"], "download": self.state["alltime_dl"]},
             index=(now,),
         )
@@ -138,25 +138,18 @@ class qBittorrent:
         )
 
         try:
-            data.qBittorrentFrame = data.qBittorrentFrame.truncate(
-                before=(now - pd.Timedelta("1H")), copy=False
-            ).append(qBittorrentRow)
+            self.speedFrame = self.speedFrame.truncate(before=(now - pd.Timedelta("1H")), copy=False).append(speedRow)
         except (TypeError, AttributeError):
-            data.qBittorrentFrame = qBittorrentRow
+            self.speedFrame = speedRow
 
         try:
-            diff = data.torrentFrame.columns.difference(torrentRow.columns)
+            diff = self.torrentFrame.columns.difference(torrentRow.columns)
             if not diff.empty:
-                data.torrentFrame.drop(columns=diff, inplace=True, errors="ignore")
-                data.torrentFrame.dropna(how="all", inplace=True)
-            data.torrentFrame = data.torrentFrame.append(torrentRow)
+                self.torrentFrame.drop(columns=diff, inplace=True, errors="ignore")
+                self.torrentFrame.dropna(how="all", inplace=True)
+            self.torrentFrame = self.torrentFrame.append(torrentRow)
         except (TypeError, AttributeError):
-            data.torrentFrame = torrentRow
-
-        hi = data.qBittorrentFrame.iloc[-1]
-        lo = data.qBittorrentFrame.iloc[0]
-        speeds = (hi - lo) // (hi.name - lo.name).total_seconds()
-        return speeds["upload"], speeds["download"]
+            self.torrentFrame = torrentRow
 
     def get_preference(self, key: str):
         if self._preferences is None:
@@ -167,19 +160,6 @@ class qBittorrent:
         res = requests.get(self.api_base + path, **kwargs, timeout=7)
         res.raise_for_status()
         return res
-
-    def _load_data(self):
-        """Load Data object from pickle."""
-        try:
-            with self.datafile.open(mode="rb") as f:
-                data = pickle.load(f)
-            assert data.integrity_test(), "Intergrity test failed."
-        except (OSError, pickle.PickleError, AssertionError) as e:
-            if self.datafile.exists() and not _debug:
-                print(f"Loading data from '{self.datafile}' failed: {e}")
-                self.datafile.rename(f"{self.datafile}_{now.strftime('%y%m%d_%H%M%S')}")
-            data = Data()
-        return data
 
     def clean_seedDir(self):
         try:
@@ -213,19 +193,23 @@ class qBittorrent:
             realSpace = max(realSpace, disk_usage(self.seedDir).free)
         except TypeError:
             pass
-        self.freeSpace = realSpace - self.spaceQuota - sum(i["amount_left"] for i in self.torrents.values())
 
+        self.freeSpace = realSpace - self.spaceQuota - sum(i["amount_left"] for i in self.torrents.values())
         if self.freeSpace < 0:
             return True
 
-        alert = self.data.alertQue.get_alert()
-        if alert == AlertQue.SKIP:
-            return False
+        alert = self.alertQue.get_alert()
+        if alert is not None:
+            return alert == AlertQue.FETCH
+
+        hi = self.speedFrame.iloc[-1]
+        lo = self.speedFrame.iloc[0]
+        speeds = (hi - lo) // (hi.name - lo.name).total_seconds()
+        print("Last hour avg speed: UL: {upload}/s, DL: {download}/s.".format_map(speeds.apply(humansize)))
 
         return (
-            alert == AlertQue.FETCH
-            or 0 <= self.upSpeed < self.upSpeedThresh
-            and 0 <= self.dlSpeed < self.dlSpeedThresh
+            0 <= speeds["upload"] < self.upSpeedThresh
+            and 0 <= speeds["download"] < self.dlSpeedThresh
             and "queuedDL" not in self.torrentState
             and not self.state["use_alt_speed_limits"]
             and self.state["up_rate_limit"] > self.upSpeedThresh
@@ -235,7 +219,7 @@ class qBittorrent:
         """Discover the slowest torrents using jenks natural breaks."""
         from jenkspy import jenks_breaks
 
-        df = self.data.torrentFrame = self.data.torrentFrame.truncate(
+        df = self.torrentFrame = self.torrentFrame.truncate(
             before=(now - pd.Timedelta("24H")),
             copy=False,
         )
@@ -248,15 +232,14 @@ class qBittorrent:
             c = speeds.size - 1
             if c > 3:
                 c = 3
-            breaks = jenks_breaks(speeds, nb_class=c)[1]
+            self.breaks = jenks_breaks(speeds, nb_class=c)[1]
         except Exception as e:
             print("Jenkspy failed:", e)
-            breaks = speeds.mean()
+            self.breaks = speeds.mean()
 
-        self.breaks = breaks
         oneDayAgo = pd.Timestamp.now(tz="UTC").timestamp() - 86400
 
-        for k in speeds.loc[speeds <= breaks].index:
+        for k in speeds.loc[speeds <= self.breaks].index:
             v = self.torrents[k]
             if v["added_on"] < oneDayAgo:
                 yield Removable(hash=k, size=v["size"], peer=v["num_incomplete"], title=v["name"])
@@ -286,7 +269,6 @@ class qBittorrent:
             log.record("Error", None, e)
             return
 
-        alertQue = self.data.alertQue
         for t in downloadList:
             log.record("Download", t.size, t.title)
             try:
@@ -294,10 +276,10 @@ class qBittorrent:
             except ValueError:
                 continue
             if pd.notna(expire):
-                alertQue.add_alert(expire, "+-1H", AlertQue.FETCH)
+                self.alertQue.add_alert(expire, "+-1H", AlertQue.FETCH)
 
-        alertQue.clear_current_alert()
-        alertQue.add_alert(now, f"{len(downloadList)}H", AlertQue.SKIP)
+        self.alertQue.clear_current_alert()
+        self.alertQue.add_alert(now, f"{len(downloadList)}H", AlertQue.SKIP)
 
     def resume_paused(self):
         if not self.torrentState.isdisjoint({"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}):
@@ -308,11 +290,12 @@ class qBittorrent:
                 self._request(path, params=payload)
 
     def dump_data(self):
+        data = {k: getattr(self, k) for k, _ in self.template}
         if _debug:
             return
         try:
             with self.datafile.open("wb") as f:
-                pickle.dump(self.data, f)
+                pickle.dump(data, f)
         except (OSError, pickle.PickleError) as e:
             msg = f"Writing data to disk failed: {e}"
             log.record("Error", None, msg)
@@ -330,8 +313,8 @@ class MTeam:
         self.feeds = feeds
         self.account = account
         self.qb = qb
-        self.session = qb.data.session
-        self.history = qb.data.mteamHistory
+        self.session = qb.session
+        self.history = qb.mteamHistory
         self.minPeer = (minPeer[0] / byteUnit["GiB"], minPeer[1])
 
     def _get(self, path: str):
@@ -347,7 +330,7 @@ class MTeam:
             except (requests.ConnectionError, requests.HTTPError, requests.Timeout):
                 pass
             except Exception:
-                self.session = self.qb.data.init_session()
+                self.session = self.qb.init_session()
 
     def _login(self):
         if not hasattr(self, "loginParam"):
@@ -512,7 +495,7 @@ class MPSolver:
         removeSize = sum(i.size for i in self.removeList)
         downloadSize = sum(i.size for i in self.downloadList)
         finalFreeSpace = self.freeSpace + removeSize - downloadSize
-        alertQue = self.qb.data.alertQue
+        alertQue = self.qb.alertQue
 
         print(sepSlim)
         print(
