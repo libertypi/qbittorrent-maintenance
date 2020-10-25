@@ -1,6 +1,7 @@
 import pickle
 from collections import namedtuple
 from configparser import ConfigParser
+from heapq import heappop, heappush
 from pathlib import Path
 from re import compile as re_compile
 from shutil import disk_usage, rmtree
@@ -99,6 +100,8 @@ class qBittorrent:
                     log.record("Cleanup", None, path.name)
 
     def need_action(self) -> bool:
+        """True if speed is low, space is low, or an alert is near."""
+
         realSpace: int = self.state["free_space_on_disk"]
         try:
             realSpace = max(realSpace, disk_usage(self.seedDir).free)
@@ -113,18 +116,9 @@ class qBittorrent:
                 and not self.state["use_alt_speed_limits"]
                 and self.state["up_rate_limit"] > self.upSpeedThresh
             )
-            or self.data.expires_in("3H")
+            or self.has_alert()
             or self.freeSpace < 0
         )
-
-    def set_expire(self, offset: str):
-        """Set expiry alert based on offset."""
-        try:
-            expire = now + pd.Timedelta(offset)
-        except ValueError:
-            return
-        if not self.data.expiryAlert >= expire:
-            self.data.expiryAlert = expire
 
     def get_remove_cands(self):
         oneDayAgo = pd.Timestamp.now(tz="UTC").timestamp() - 86400
@@ -134,17 +128,50 @@ class qBittorrent:
                 yield self.Removable(hash=k, size=v["size"], peer=v["num_incomplete"], title=v["name"])
 
     def remove_torrents(self, removeList: tuple):
-        if removeList and not _debug:
-            path = "torrents/delete"
-            payload = {"hashes": "|".join(i.hash for i in removeList), "deleteFiles": True}
-            self._request(path, params=payload)
+        if not removeList:
+            return
+        path = "torrents/delete"
+        payload = {"hashes": "|".join(i.hash for i in removeList), "deleteFiles": True}
+        self._request(path, params=payload)
         for v in removeList:
             log.record("Remove", v.size, v.title)
 
-    def add_torrent(self, files: dict):
-        """Upload torrents. Raise HTTPError if failed."""
-        res = requests.post(self.api_base + "torrents/add", files=files)
-        res.raise_for_status()
+    def has_alert(self) -> bool:
+        """Return True if an alert is near or has alreadly passed.
+
+        When a timelimited free torrent being added, an alert will be set on its expiry date.
+        Alerts will be deleted only when new downloads were made.
+        """
+        try:
+            return self.data.expiryAlert[0] <= now + pd.Timedelta("3H")
+        except IndexError:
+            return False
+
+    def add_torrent(self, downloadList: tuple, contents: dict):
+        """Upload torrents and clear recent alerts."""
+        if not contents:
+            return
+        try:
+            res = requests.post(self.api_base + "torrents/add", files=contents)
+            res.raise_for_status()
+        except requests.exceptions as e:
+            log.record("Error", None, e)
+            return
+
+        expiryAlert = self.data.expiryAlert
+        for t in downloadList:
+            log.record("Download", t.size, t.title)
+            if not t.expire:
+                continue
+            try:
+                heappush(expiryAlert, now + pd.Timedelta(t.expire))
+            except ValueError:
+                pass
+
+        # when download is made, clear alerts to 3 hours ahead.
+        thresh = now + pd.Timedelta("3H")
+        while expiryAlert and expiryAlert[0] <= thresh:
+            heappop(expiryAlert)
 
     def resume_paused(self):
         paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
@@ -171,7 +198,7 @@ class Data:
     def __init__(self):
         self.qBittorrentFrame = pd.DataFrame()
         self.torrentFrame = pd.DataFrame()
-        self.expiryAlert = pd.NaT
+        self.expiryAlert = []
         self.mteamHistory = set()
         self.init_session()
 
@@ -190,6 +217,7 @@ class Data:
                 for x, y in (
                     (self.qBittorrentFrame, pd.DataFrame),
                     (self.torrentFrame, pd.DataFrame),
+                    (self.expiryAlert, list),
                     (self.mteamHistory, set),
                     (self.session, requests.Session),
                 )
@@ -229,16 +257,6 @@ class Data:
         lo = self.qBittorrentFrame.iloc[0]
         speeds = (hi - lo) // (hi.name - lo.name).total_seconds()
         return speeds["upload"], speeds["download"]
-
-    def expires_in(self, offset: str) -> bool:
-        """Whether the latest free torrent is expiring during this period.
-
-        If the alert is at 12:00 and offset is 3H, returns True from 9:00 to 15:00."""
-        offset = pd.Timedelta(offset)
-        try:
-            return now - offset <= self.expiryAlert <= now + offset
-        except (AttributeError, TypeError):
-            self.expiryAlert = pd.NaT
 
     def get_slowest(self):
         """Discover the slowest torrents using jenks natural breaks."""
@@ -371,18 +389,13 @@ class MTeam:
                     print("Parsing page error:", e)
 
     def download(self, downloadList: tuple):
-        if not _debug:
-            try:
-                self.qb.add_torrent({t.tid: self._get(t.link).content for t in downloadList})
-            except (AttributeError, requests.HTTPError) as e:
-                print(f"Downloading torrents failed: {e}")
-                return
-
-        for t in downloadList:
-            if t.expire:
-                self.qb.set_expire(t.expire)
-            self.history.add(t.tid)
-            log.record("Download", t.size, t.title)
+        try:
+            content = {f"{t.tid}.torrent": self._get(t.link).content for t in downloadList}
+        except AttributeError:
+            print(f"Downloading torrents failed.")
+        else:
+            self.history.update(t.tid for t in downloadList)
+            return content
 
 
 class MPSolver:
@@ -472,12 +485,7 @@ class MPSolver:
                 humansize(sum(i.size for i in self.downloadCand)),
             )
         )
-        print(
-            "Download limit: {}. Expire alert: {}.".format(
-                self.maxDownloads,
-                self.qb.data.expiryAlert,
-            )
-        )
+        print("Download limit: {}. Expiry alert: {}.".format(self.maxDownloads, len(self.qb.data.expiryAlert)))
         print(
             "Remove candidates: {}/{}. Total: {}.".format(
                 len(self.removeCand),
@@ -525,17 +533,11 @@ class Log(list):
         self.append("{:20}{:12}{:14}{}\n".format(pd.Timestamp.now().strftime("%D %T"), action, humansize(size), name))
 
     def write(self, logfile: Path):
-        if not self:
+        if not self or _debug:
             return
 
-        sep = "-" * 80
-        header = "{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", sep)
+        header = "{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", "-" * 80)
         content = reversed(self)
-
-        if _debug:
-            print(sep)
-            print(header, *content, sep="", end="")
-            return
 
         try:
             with open(logfile, mode="r+", encoding="utf-8") as f:
@@ -638,8 +640,10 @@ def main():
             qb=qb,
         )
         solver.report()
-        qb.remove_torrents(solver.removeList)
-        mteam.download(solver.downloadList)
+
+        if not _debug:
+            qb.remove_torrents(solver.removeList)
+            qb.add_torrent(solver.downloadList, mteam.download(solver.downloadList))
 
     qb.resume_paused()
     qb.dump_data()
