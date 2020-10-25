@@ -155,15 +155,15 @@ class qBittorrent:
         expiryAlert = self.data.expiryAlert
         for t in downloadList:
             log.record("Download", t.size, t.title)
-            if not t.expire:
-                continue
             try:
-                heappush(expiryAlert, now + pd.Timedelta(t.expire))
+                expire = pd.Timedelta(t.expire)
+                if pd.notna(expire):
+                    heappush(expiryAlert, now + expire)
             except ValueError:
                 pass
 
-        # when download is made, clear alerts up to 1 day.
-        thresh = now + pd.Timedelta("1D")
+        # when a download is made, clear alerts up to 12 hour.
+        thresh = now + pd.Timedelta("12H")
         while expiryAlert and expiryAlert[0] <= thresh:
             heappop(expiryAlert)
 
