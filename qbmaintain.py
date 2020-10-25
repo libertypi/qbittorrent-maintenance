@@ -26,30 +26,22 @@ class AlertQue(list):
     FETCH = 1
 
     def get_alert(self):
-        """Get the most recent and highest priority alert, if any."""
+        """Get the most recent alert, if any.
 
-        result = None
+        SKIP will be returned during its duration, others only once.
+        """
         while self and now >= self[0].interval.left:
-            this = self[0]
-            if now in this.interval:
-                if result and result.type < this.type:
-                    # if a higher priority alert is overlapped
-                    # with this one, stop the loop.
-                    # otherwise, the previous alert will
-                    # be dumped.
-                    break
-                result = this
+            if now in self[0].interval:
+                if self[0].type == self.SKIP:
+                    return self.SKIP
+                return heappop(self).type
             heappop(self)
-
-        if result:
-            heappush(self, result)
-            return result.type
 
     def add_alert(self, start: pd.Timestamp, span: str, _type: int):
         """Add a new alert to the que.
 
-        span decide the duration, can also start with "-" and "+-"."""
-
+        span decide the duration, can also start with "-" and "+-".
+        """
         offset = pd.Timedelta(span.lstrip("+-"))
         if span.startswith("+-"):
             start, stop = start - offset, start + offset
@@ -57,7 +49,6 @@ class AlertQue(list):
             start, stop = start - offset, start
         else:
             stop = start + offset
-
         heappush(
             self,
             Alert(interval=pd.Interval(start, stop, closed="both"), type=_type),
@@ -234,6 +225,7 @@ class qBittorrent:
             alert == AlertQue.FETCH
             or 0 <= self.upSpeed < self.upSpeedThresh
             and 0 <= self.dlSpeed < self.dlSpeedThresh
+            and float(self.state["write_cache_overload"]) < 50
             and not self.state["use_alt_speed_limits"]
             and self.state["up_rate_limit"] > self.upSpeedThresh
         )
@@ -303,7 +295,7 @@ class qBittorrent:
             except ValueError:
                 continue
             if pd.notna(expire):
-                alertQue.add_alert(expire, "+-3H", AlertQue.FETCH)
+                alertQue.add_alert(expire, "+-1H", AlertQue.FETCH)
 
         alertQue.clear_current_alert()
         alertQue.add_alert(now, "1H", AlertQue.SKIP)
