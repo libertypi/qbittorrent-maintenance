@@ -109,6 +109,7 @@ class qBittorrent:
 
         self.upSpeedThresh, self.dlSpeedThresh = (int(i * byteUnit["MiB"]) for i in speedThresh)
         self.spaceQuota = int(spaceQuota * byteUnit["GiB"])
+        self.torrentState = {i["state"] for i in self.torrents.values()}
         self._preferences = None
 
         self.datafile = datafile
@@ -212,7 +213,7 @@ class qBittorrent:
             realSpace = max(realSpace, disk_usage(self.seedDir).free)
         except TypeError:
             pass
-        self.freeSpace = realSpace - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
+        self.freeSpace = realSpace - self.spaceQuota - sum(i["amount_left"] for i in self.torrents.values())
 
         if self.freeSpace < 0:
             return True
@@ -225,7 +226,7 @@ class qBittorrent:
             alert == AlertQue.FETCH
             or 0 <= self.upSpeed < self.upSpeedThresh
             and 0 <= self.dlSpeed < self.dlSpeedThresh
-            and float(self.state["write_cache_overload"]) < 50
+            and "queuedDL" not in self.torrentState
             and not self.state["use_alt_speed_limits"]
             and self.state["up_rate_limit"] > self.upSpeedThresh
         )
@@ -248,13 +249,11 @@ class qBittorrent:
             if c > 3:
                 c = 3
             breaks = jenks_breaks(speeds, nb_class=c)[1]
-            method = "jenkspy"
         except Exception as e:
             print("Jenkspy failed:", e)
             breaks = speeds.mean()
-            method = "mean"
 
-        self.breaks = breaks, method
+        self.breaks = breaks
         oneDayAgo = pd.Timestamp.now(tz="UTC").timestamp() - 86400
 
         for k in speeds.loc[speeds <= breaks].index:
@@ -298,11 +297,10 @@ class qBittorrent:
                 alertQue.add_alert(expire, "+-1H", AlertQue.FETCH)
 
         alertQue.clear_current_alert()
-        alertQue.add_alert(now, "1H", AlertQue.SKIP)
+        alertQue.add_alert(now, f"{len(downloadList)}H", AlertQue.SKIP)
 
     def resume_paused(self):
-        paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
-        if not paused.isdisjoint(i["state"] for i in self.torrents.values()):
+        if not self.torrentState.isdisjoint({"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}):
             print("Resume torrents.")
             if not _debug:
                 path = "torrents/resume"
@@ -478,7 +476,7 @@ class MPSolver:
         peerCoef = [t.peer * 2 for t in downloadCand]
         pool = [model.NewBoolVar(f"DL_{i}") for i in range(len(downloadCand))]
 
-        if isinstance(self.maxDownloads, int) and self.maxDownloads > 0:
+        if self.maxDownloads > 0:
             model.Add(cp_model.LinearExpr.Sum(pool) <= self.maxDownloads)
 
         sizeCoef.extend(-t.size for t in removeCand)
@@ -514,8 +512,15 @@ class MPSolver:
         removeSize = sum(i.size for i in self.removeList)
         downloadSize = sum(i.size for i in self.downloadList)
         finalFreeSpace = self.freeSpace + removeSize - downloadSize
+        alertQue = self.qb.data.alertQue
 
         print(sepSlim)
+        print(
+            "Alert que: {}. Nearest: {}.".format(
+                len(alertQue),
+                alertQue[0].interval.left.strftime("%F %T") if alertQue else "NaT",
+            )
+        )
         print(
             "Disk free space: {}. Max avail space: {}.".format(
                 humansize(self.freeSpace),
@@ -523,20 +528,20 @@ class MPSolver:
             )
         )
         print(
-            "Download candidates: {}. Total: {}.".format(
+            "Download candidates: {}. Total: {}. Limit: {}.".format(
                 len(self.downloadCand),
                 humansize(sum(i.size for i in self.downloadCand)),
+                self.maxDownloads,
             )
         )
-        print(f"Download limit: {self.maxDownloads}. Alert que: {len(self.qb.data.alertQue)}.")
         print(
-            "Remove candidates: {}/{}. Total: {}.".format(
+            "Remove candidates: {}/{}. Total: {}. Break: {}/s.".format(
                 len(self.removeCand),
                 len(self.qb.torrents),
                 humansize(self.removeCandSize),
+                humansize(self.qb.breaks),
             )
         )
-        print(f"Speed break: {humansize(self.qb.breaks[0])}/s. Method: {self.qb.breaks[1]}.")
         for v in self.removeCand:
             print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
 
