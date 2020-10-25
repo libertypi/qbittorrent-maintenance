@@ -11,15 +11,96 @@ from urllib.parse import urljoin
 import pandas as pd
 import requests
 
+Alert = namedtuple("Alert", ("interval", "type"))
+Removable = namedtuple("Removable", ("hash", "size", "peer", "title"))
+Torrent = namedtuple("Torrent", ("tid", "size", "peer", "title", "link", "expire"))
+
 _debug = False
 now = pd.Timestamp.now()
 byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGTP"), (1024 ** s for s in range(1, 6))) for u in us}
 
 
+class AlertQue(list):
+
+    SKIP = 0
+    FETCH = 1
+
+    def get_alert(self):
+        """Get the most recent and highest priority alert, if any."""
+
+        result = None
+        while self and now >= self[0].interval.left:
+            this = self[0]
+            if now in this.interval:
+                if result and result.type < this.type:
+                    # if a higher priority alert is overlapped
+                    # with this one, stop the loop.
+                    # otherwise, the previous alert will
+                    # be dumped.
+                    break
+                result = this
+            heappop(self)
+
+        if result:
+            heappush(self, result)
+            return result.type
+
+    def add_alert(self, start: pd.Timestamp, span: str, _type: int):
+        """Add a new alert to the que.
+
+        span decide the duration, can also start with "-" and "+-"."""
+
+        offset = pd.Timedelta(span.lstrip("+-"))
+        if span.startswith("+-"):
+            start, stop = start - offset, start + offset
+        elif span.startswith("-"):
+            start, stop = start - offset, start
+        else:
+            stop = start + offset
+
+        heappush(
+            self,
+            Alert(interval=pd.Interval(start, stop, closed="both"), type=_type),
+        )
+
+    def clear_current_alert(self):
+        while self and now in self[0].interval:
+            heappop(self)
+
+
+class Data:
+    def __init__(self):
+        self.qBittorrentFrame = pd.DataFrame()
+        self.torrentFrame = pd.DataFrame()
+        self.mteamHistory = set()
+        self.alertQue = AlertQue()
+        self.init_session()
+
+    def init_session(self):
+        """Initialize a new requests session."""
+        self.session = requests.session()
+        self.session.headers.update(
+            {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) Gecko/20100101 Firefox/80.0"}
+        )
+        return self.session
+
+    def integrity_test(self):
+        try:
+            return all(
+                isinstance(x, y)
+                for x, y in (
+                    (self.qBittorrentFrame, pd.DataFrame),
+                    (self.torrentFrame, pd.DataFrame),
+                    (self.alertQue, AlertQue),
+                    (self.mteamHistory, set),
+                    (self.session, requests.Session),
+                )
+            )
+        except AttributeError:
+            return False
+
+
 class qBittorrent:
-
-    Removable = namedtuple("Removable", ("hash", "size", "peer", "title"))
-
     def __init__(self, *, host: str, seedDir: str, speedThresh: tuple, spaceQuota: int, datafile: Path):
 
         self.api_base = urljoin(host, "api/v2/")
@@ -41,13 +122,49 @@ class qBittorrent:
 
         self.datafile = datafile
         self.data = self._load_data()
-        self.upSpeed, self.dlSpeed = self.data.record(self)
+        self.upSpeed, self.dlSpeed = self._record()
 
         print(
             "qBittorrent average speed last hour: UL: {}/s, DL: {}/s. ".format(
                 humansize(self.upSpeed), humansize(self.dlSpeed)
             )
         )
+
+    def _record(self):
+        """Record qBittorrent traffic data to pandas DataFrame.
+
+        Calculate the last hour avg UL/DL speeds."""
+
+        data = self.data
+        qBittorrentRow = pd.DataFrame(
+            {"upload": self.state["alltime_ul"], "download": self.state["alltime_dl"]},
+            index=(now,),
+        )
+        torrentRow = pd.DataFrame(
+            {k: v["uploaded"] for k, v in self.torrents.items()},
+            index=(now,),
+        )
+
+        try:
+            data.qBittorrentFrame = data.qBittorrentFrame.truncate(
+                before=(now - pd.Timedelta("1H")), copy=False
+            ).append(qBittorrentRow)
+        except (TypeError, AttributeError):
+            data.qBittorrentFrame = qBittorrentRow
+
+        try:
+            diff = data.torrentFrame.columns.difference(torrentRow.columns)
+            if not diff.empty:
+                data.torrentFrame.drop(columns=diff, inplace=True, errors="ignore")
+                data.torrentFrame.dropna(how="all", inplace=True)
+            data.torrentFrame = data.torrentFrame.append(torrentRow)
+        except (TypeError, AttributeError):
+            data.torrentFrame = torrentRow
+
+        hi = data.qBittorrentFrame.iloc[-1]
+        lo = data.qBittorrentFrame.iloc[0]
+        speeds = (hi - lo) // (hi.name - lo.name).total_seconds()
+        return speeds["upload"], speeds["download"]
 
     def get_preference(self, key: str):
         if self._preferences is None:
@@ -66,12 +183,9 @@ class qBittorrent:
                 data = pickle.load(f)
             assert data.integrity_test(), "Intergrity test failed."
         except (OSError, pickle.PickleError, AssertionError) as e:
-            print(f"Loading data from '{self.datafile}' failed: {e}")
-            if not _debug:
-                try:
-                    self.datafile.rename(f"{self.datafile}_{now.strftime('%y%m%d_%H%M%S')}")
-                except OSError:
-                    pass
+            if self.datafile.exists() and not _debug:
+                print(f"Loading data from '{self.datafile}' failed: {e}")
+                self.datafile.rename(f"{self.datafile}_{now.strftime('%y%m%d_%H%M%S')}")
             data = Data()
         return data
 
@@ -108,24 +222,53 @@ class qBittorrent:
         except TypeError:
             pass
         self.freeSpace = realSpace - sum(i["amount_left"] for i in self.torrents.values()) - self.spaceQuota
-        expiryAlert = self.data.expiryAlert
+
+        if self.freeSpace < 0:
+            return True
+
+        alert = self.data.alertQue.get_alert()
+        if alert == AlertQue.SKIP:
+            return False
 
         return (
-            0 <= self.upSpeed < self.upSpeedThresh
+            alert == AlertQue.FETCH
+            or 0 <= self.upSpeed < self.upSpeedThresh
             and 0 <= self.dlSpeed < self.dlSpeedThresh
             and not self.state["use_alt_speed_limits"]
             and self.state["up_rate_limit"] > self.upSpeedThresh
-            or expiryAlert
-            and expiryAlert[0] <= now + pd.Timedelta("3H")
-            or self.freeSpace < 0
         )
 
     def get_remove_cands(self):
+        """Discover the slowest torrents using jenks natural breaks."""
+        from jenkspy import jenks_breaks
+
+        df = self.data.torrentFrame = self.data.torrentFrame.truncate(
+            before=(now - pd.Timedelta("24H")),
+            copy=False,
+        )
+        hi = df.iloc[-1]
+        lo = df.apply(pd.Series.first_valid_index)
+        speeds = (hi.values - df.lookup(lo, lo.index)) // (hi.name - lo).dt.total_seconds()
+        speeds.dropna(inplace=True)
+
+        try:
+            c = speeds.size - 1
+            if c > 3:
+                c = 3
+            breaks = jenks_breaks(speeds, nb_class=c)[1]
+            method = "jenkspy"
+        except Exception as e:
+            print("Jenkspy failed:", e)
+            breaks = speeds.mean()
+            method = "mean"
+
+        self.breaks = breaks, method
         oneDayAgo = pd.Timestamp.now(tz="UTC").timestamp() - 86400
-        for k in self.data.get_slowest():
+
+        for k in speeds.loc[speeds <= breaks].index:
             v = self.torrents[k]
             if v["added_on"] < oneDayAgo:
-                yield self.Removable(hash=k, size=v["size"], peer=v["num_incomplete"], title=v["name"])
+                yield Removable(hash=k, size=v["size"], peer=v["num_incomplete"], title=v["name"])
 
     def remove_torrents(self, removeList: tuple):
         if not removeList:
@@ -140,7 +283,7 @@ class qBittorrent:
         """Upload torrents and clear recent alerts.
 
         When a timelimited free torrent being added, an alert will be set on its expiry date.
-        Alerts will be deleted only when new downloads were made.
+        When new downloads were made, alerts on current time will be cleared.
         """
 
         if not contents:
@@ -152,20 +295,18 @@ class qBittorrent:
             log.record("Error", None, e)
             return
 
-        expiryAlert = self.data.expiryAlert
+        alertQue = self.data.alertQue
         for t in downloadList:
             log.record("Download", t.size, t.title)
             try:
-                expire = pd.Timedelta(t.expire)
-                if pd.notna(expire):
-                    heappush(expiryAlert, now + expire)
+                expire = now + pd.Timedelta(t.expire)
             except ValueError:
-                pass
+                continue
+            if pd.notna(expire):
+                alertQue.add_alert(expire, "+-3H", AlertQue.FETCH)
 
-        # when a download is made, clear alerts up to 12 hour.
-        thresh = now + pd.Timedelta("12H")
-        while expiryAlert and expiryAlert[0] <= thresh:
-            heappop(expiryAlert)
+        alertQue.clear_current_alert()
+        alertQue.add_alert(now, "1H", AlertQue.SKIP)
 
     def resume_paused(self):
         paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
@@ -188,100 +329,10 @@ class qBittorrent:
             print(msg)
 
 
-class Data:
-    def __init__(self):
-        self.qBittorrentFrame = pd.DataFrame()
-        self.torrentFrame = pd.DataFrame()
-        self.mteamHistory = set()
-        self.expiryAlert = []
-        self.init_session()
-
-    def init_session(self):
-        """Initialize a new requests session."""
-        self.session = requests.session()
-        self.session.headers.update(
-            {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) Gecko/20100101 Firefox/80.0"}
-        )
-        return self.session
-
-    def integrity_test(self):
-        try:
-            return all(
-                isinstance(x, y)
-                for x, y in (
-                    (self.qBittorrentFrame, pd.DataFrame),
-                    (self.torrentFrame, pd.DataFrame),
-                    (self.expiryAlert, list),
-                    (self.mteamHistory, set),
-                    (self.session, requests.Session),
-                )
-            )
-        except AttributeError:
-            return False
-
-    def record(self, qb: qBittorrent):
-        """Record qBittorrent traffic data to pandas DataFrame. Returns the last hour avg UL/DL speeds."""
-
-        qBittorrentRow = pd.DataFrame(
-            {"upload": qb.state["alltime_ul"], "download": qb.state["alltime_dl"]},
-            index=(now,),
-        )
-        torrentRow = pd.DataFrame(
-            {k: v["uploaded"] for k, v in qb.torrents.items()},
-            index=(now,),
-        )
-
-        try:
-            self.qBittorrentFrame = self.qBittorrentFrame.truncate(
-                before=(now - pd.Timedelta("1H")), copy=False
-            ).append(qBittorrentRow)
-        except (TypeError, AttributeError):
-            self.qBittorrentFrame = qBittorrentRow
-
-        try:
-            diff = self.torrentFrame.columns.difference(torrentRow.columns)
-            if not diff.empty:
-                self.torrentFrame.drop(columns=diff, inplace=True, errors="ignore")
-                self.torrentFrame.dropna(how="all", inplace=True)
-            self.torrentFrame = self.torrentFrame.append(torrentRow)
-        except (TypeError, AttributeError):
-            self.torrentFrame = torrentRow
-
-        hi = self.qBittorrentFrame.iloc[-1]
-        lo = self.qBittorrentFrame.iloc[0]
-        speeds = (hi - lo) // (hi.name - lo.name).total_seconds()
-        return speeds["upload"], speeds["download"]
-
-    def get_slowest(self):
-        """Discover the slowest torrents using jenks natural breaks."""
-        from jenkspy import jenks_breaks
-
-        df = self.torrentFrame = self.torrentFrame.truncate(
-            before=(now - pd.Timedelta("24H")),
-            copy=False,
-        )
-        hi = df.iloc[-1]
-        lo = df.apply(pd.Series.first_valid_index)
-        speeds = (hi.values - df.lookup(lo, lo.index)) // (hi.name - lo).dt.total_seconds()
-        speeds.dropna(inplace=True)
-
-        try:
-            c = speeds.size - 1
-            if c > 3:
-                c = 3
-            breaks = jenks_breaks(speeds, nb_class=c)[1]
-        except Exception as e:
-            print("Jenkspy failed:", e)
-            breaks = speeds.mean()
-
-        return speeds.loc[speeds <= breaks].index
-
-
 class MTeam:
     """A cumbersome MTeam downloader."""
 
     domain = "https://pt.m-team.cc"
-    Torrent = namedtuple("Torrent", ("tid", "size", "peer", "title", "link", "expire"))
 
     def __init__(self, *, feeds: list, account: tuple, minPeer: tuple, qb: qBittorrent):
         """The minimum peer requirement subjects to: Peer >= A * Size(GiB) + B
@@ -378,7 +429,7 @@ class MTeam:
                     title = tr[colTitle].find("a", href=re_details, string=True)
                     title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
 
-                    yield self.Torrent(tid=tid, size=size, peer=peer, title=title, link=link, expire=expire)
+                    yield Torrent(tid=tid, size=size, peer=peer, title=title, link=link, expire=expire)
                 except Exception as e:
                     print("Parsing page error:", e)
 
@@ -474,12 +525,18 @@ class MPSolver:
 
         print(sepSlim)
         print(
+            "Disk free space: {}. Max avail space: {}.".format(
+                humansize(self.freeSpace),
+                humansize(self.freeSpace + self.removeCandSize),
+            )
+        )
+        print(
             "Download candidates: {}. Total: {}.".format(
                 len(self.downloadCand),
                 humansize(sum(i.size for i in self.downloadCand)),
             )
         )
-        print("Download limit: {}. Expiry alert: {}.".format(self.maxDownloads, len(self.qb.data.expiryAlert)))
+        print(f"Download limit: {self.maxDownloads}. Alert que: {len(self.qb.data.alertQue)}.")
         print(
             "Remove candidates: {}/{}. Total: {}.".format(
                 len(self.removeCand),
@@ -487,12 +544,7 @@ class MPSolver:
                 humansize(self.removeCandSize),
             )
         )
-        print(
-            "Disk free space: {}. Max avail space: {}.".format(
-                humansize(self.freeSpace),
-                humansize(self.freeSpace + self.removeCandSize),
-            )
-        )
+        print(f"Speed break: {humansize(self.qb.breaks[0])}/s. Method: {self.qb.breaks[1]}.")
         for v in self.removeCand:
             print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
 
