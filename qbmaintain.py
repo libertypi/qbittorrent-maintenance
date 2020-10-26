@@ -11,7 +11,6 @@ from urllib.parse import urljoin
 import pandas as pd
 import requests
 
-Alert = namedtuple("Alert", ("time", "type"))
 Removable = namedtuple("Removable", ("hash", "size", "peer", "title"))
 Torrent = namedtuple("Torrent", ("tid", "size", "peer", "title", "link", "expire"))
 
@@ -21,6 +20,10 @@ byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGTP"), (1024 
 
 
 class AlertQue(list):
+    """Heap que to create and manage alert.
+
+    Alerts are stord as tuples: (time, type)
+    """
 
     SKIP = 0
     FETCH = 1
@@ -30,11 +33,11 @@ class AlertQue(list):
 
         SKIP will be returned during its duration, others only once.
         """
-        while self and now >= self[0].time.left:
-            if now in self[0].time:
-                if self[0].type == self.SKIP:
+        while self and now >= self[0][0].left:
+            if now in self[0][0]:
+                if self[0][1] == self.SKIP:
                     return self.SKIP
-                return heappop(self).type
+                return heappop(self)[1]
             heappop(self)
 
     def add_alert(self, start: pd.Timestamp, span: str, _type: int):
@@ -52,10 +55,10 @@ class AlertQue(list):
             if start > stop:
                 start, stop = stop, start
 
-        heappush(self, Alert(time=pd.Interval(start, stop, closed="both"), type=_type))
+        heappush(self, (pd.Interval(start, stop, closed="both"), _type))
 
     def clear_current_alert(self):
-        while self and now in self[0].time:
+        while self and now in self[0][0]:
             heappop(self)
 
 
@@ -526,7 +529,7 @@ def report(qb: qBittorrent, solver: MPSolver):
     print(
         "Alert que: {}. Nearest: {}.".format(
             len(qb.alertQue),
-            qb.alertQue[0].time.left.strftime("%F %T") if qb.alertQue else "NaT",
+            qb.alertQue[0][0].left.strftime("%F %T") if qb.alertQue else "NaT",
         )
     )
     print(
