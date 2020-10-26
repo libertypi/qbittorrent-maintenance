@@ -22,7 +22,7 @@ byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGTP"), (1024 
 class AlertQue(list):
     """Heap que to create and manage alert.
 
-    Alerts are stord as tuples: (time, type)
+    Internally, alerts are stord as tuples: (time, type)
     """
 
     SKIP = 0
@@ -87,6 +87,48 @@ class qBittorrent:
         self._load_data()
         self._record()
 
+    def _load_data(self):
+        """Load data objects from pickle."""
+
+        self.speedFrame: pd.DataFrame
+        self.torrentFrame: pd.DataFrame
+        self.alertQue: AlertQue
+        self.mteamHistory: set
+        self.session: requests.Session
+
+        try:
+            with self.datafile.open(mode="rb") as f:
+                self.speedFrame, self.torrentFrame, self.alertQue, self.mteamHistory, self.session = pickle.load(f)
+
+        except Exception as e:
+            if self.datafile.exists() and not _debug:
+                print(f"Reading '{self.datafile}' failed: {e}")
+                self.datafile.rename(f"{self.datafile}_{now.strftime('%y%m%d_%H%M%S')}")
+
+            self.speedFrame = self.torrentFrame = None
+            self.alertQue = AlertQue()
+            self.mteamHistory = set()
+            self.init_session()
+
+    def dump_data(self):
+        if _debug:
+            return
+        try:
+            with self.datafile.open("wb") as f:
+                pickle.dump((self.speedFrame, self.torrentFrame, self.alertQue, self.mteamHistory, self.session), f)
+        except (OSError, pickle.PickleError) as e:
+            msg = f"Writing data to disk failed: {e}"
+            log.record("Error", None, msg)
+            print(msg)
+
+    def init_session(self):
+        """Initialize a new requests session."""
+        self.session = requests.session()
+        self.session.headers.update(
+            {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) Gecko/20100101 Firefox/80.0"}
+        )
+        return self.session
+
     def _record(self):
         """Record qBittorrent traffic data to pandas DataFrame."""
 
@@ -109,15 +151,15 @@ class qBittorrent:
         except (TypeError, AttributeError):
             self.torrentFrame = torrentRow
 
-    def get_preference(self, key: str):
-        if self._preferences is None:
-            self._preferences = self._request("app/preferences").json()
-        return self._preferences[key]
-
     def _request(self, path: str, **kwargs):
         res = requests.get(self.api_base + path, **kwargs, timeout=7)
         res.raise_for_status()
         return res
+
+    def get_preference(self, key: str):
+        if self._preferences is None:
+            self._preferences = self._request("app/preferences").json()
+        return self._preferences[key]
 
     def clean_seedDir(self):
         try:
@@ -246,48 +288,6 @@ class qBittorrent:
                 path = "torrents/resume"
                 payload = {"hashes": "all"}
                 self._request(path, params=payload)
-
-    def init_session(self):
-        """Initialize a new requests session."""
-        self.session = requests.session()
-        self.session.headers.update(
-            {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) Gecko/20100101 Firefox/80.0"}
-        )
-        return self.session
-
-    def _load_data(self):
-        """Load data objects from pickle."""
-
-        self.speedFrame: pd.DataFrame
-        self.torrentFrame: pd.DataFrame
-        self.alertQue: AlertQue
-        self.mteamHistory: set
-        self.session: requests.Session
-
-        try:
-            with self.datafile.open(mode="rb") as f:
-                self.speedFrame, self.torrentFrame, self.alertQue, self.mteamHistory, self.session = pickle.load(f)
-
-        except Exception as e:
-            if self.datafile.exists() and not _debug:
-                print(f"Reading '{self.datafile}' failed: {e}")
-                self.datafile.rename(f"{self.datafile}_{now.strftime('%y%m%d_%H%M%S')}")
-
-            self.speedFrame = self.torrentFrame = None
-            self.alertQue = AlertQue()
-            self.mteamHistory = set()
-            self.init_session()
-
-    def dump_data(self):
-        if _debug:
-            return
-        try:
-            with self.datafile.open("wb") as f:
-                pickle.dump((self.speedFrame, self.torrentFrame, self.alertQue, self.mteamHistory, self.session), f)
-        except (OSError, pickle.PickleError) as e:
-            msg = f"Writing data to disk failed: {e}"
-            log.record("Error", None, msg)
-            print(msg)
 
 
 class MTeam:
