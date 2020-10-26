@@ -1,5 +1,5 @@
 import pickle
-from collections import namedtuple
+from collections import Counter, namedtuple
 from configparser import ConfigParser
 from heapq import heappop, heappush
 from pathlib import Path
@@ -43,11 +43,11 @@ class AlertQue(list):
     def add_alert(self, start: pd.Timestamp, span: str, _type: int):
         """Add a new alert to the que.
 
-        if span is None, "+-1H" will be applied.
+        span can start with "+-".
         """
 
-        if span is None:
-            offset = pd.Timedelta("1H")
+        if span.startswith("+-"):
+            offset = pd.Timedelta(span.lstrip("+-"))
             start, stop = start - offset, start + offset
         else:
             offset = pd.Timedelta(span)
@@ -80,7 +80,7 @@ class qBittorrent:
 
         self.upSpeedThresh, self.dlSpeedThresh = (i * byteUnit["MiB"] for i in speedThresh)
         self.spaceQuota = spaceQuota * byteUnit["GiB"]
-        self.torrentState = {i["state"] for i in self.torrents.values()}
+        self.stateCounter = Counter(i["state"] for i in self.torrents.values())
         self._preferences = None
 
         self.datafile = datafile
@@ -194,7 +194,9 @@ class qBittorrent:
         except TypeError:
             pass
 
-        self.freeSpace = int(realSpace - self.spaceQuota - sum(i["amount_left"] for i in self.torrents.values()))
+        self.freeSpace = int(
+            realSpace - self.spaceQuota - sum(i["amount_left"] for i in self.torrents.values()),
+        )
         if self.freeSpace < 0:
             return True
 
@@ -210,9 +212,9 @@ class qBittorrent:
         return (
             0 <= speeds["upload"] < self.upSpeedThresh
             and 0 <= speeds["download"] < self.dlSpeedThresh
-            and "queuedDL" not in self.torrentState
+            and "queuedDL" not in self.stateCounter
             and not self.state["use_alt_speed_limits"]
-            and self.state["up_rate_limit"] > self.upSpeedThresh
+            and not 0 < self.state["up_rate_limit"] < self.upSpeedThresh
         )
 
     def get_remove_cands(self):
@@ -254,20 +256,17 @@ class qBittorrent:
         for v in removeList:
             log.record("Remove", v.size, v.title)
 
-    def add_torrent(self, downloadList: tuple, contents: dict):
+    def add_torrent(self, downloadList: tuple, content: dict):
         """Upload torrents and clear recent alerts.
 
         When a timelimited free torrent being added, an alert will be set on its expiry date.
         When new downloads were made, alerts on current time will be cleared.
         """
-
-        if not contents:
-            return
         try:
-            self._request(self.api_base + "torrents/add", method="POST", files=contents)
+            self._request("torrents/add", method="POST", files=content)
         except requests.RequestException as e:
             log.record("Error", None, e)
-            return
+            return False
 
         for t in downloadList:
             log.record("Download", t.size, t.title)
@@ -276,13 +275,15 @@ class qBittorrent:
             except ValueError:
                 continue
             if pd.notna(expire):
-                self.alertQue.add_alert(expire, None, AlertQue.FETCH)
+                self.alertQue.add_alert(expire, "2H", AlertQue.FETCH)
 
         self.alertQue.clear_current_alert()
         self.alertQue.add_alert(now, f"{len(downloadList)}H", AlertQue.SKIP)
+        return True
 
     def resume_paused(self):
-        if not self.torrentState.isdisjoint({"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}):
+        paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
+        if not paused.isdisjoint(self.stateCounter):
             print("Resume torrents.")
             if not _debug:
                 self._request("torrents/resume", params={"hashes": "all"})
@@ -390,18 +391,20 @@ class MTeam:
 
                 except Exception as e:
                     print("Parsing page error:", e)
-
                 else:
                     yield Torrent(tid=tid, size=size, peer=peer, title=title, link=link, expire=expire)
 
     def download(self, downloadList: tuple):
+        if not downloadList:
+            return
         try:
             content = {t.tid: self._get(t.link).content for t in downloadList}
         except AttributeError:
             print(f"Downloading torrents failed.")
-        else:
+            return
+
+        if self.qb.add_torrent(downloadList, content):
             self.history.update(t.tid for t in downloadList)
-            return content
 
 
 class MPSolver:
@@ -413,10 +416,11 @@ class MPSolver:
             --> downloadSize - removedSize <= freeSpace
             When freeSpace + removedSize < 0, this become impossible to satisfy.
             So the algorithm should delete all remove candidates to free up space.
-        2: total download <= qBittorrent max_active_downloads
+        2: total downloads <= qb max_active_downloads - current_downloading
+            so we don't add torrents to the queue.
 
     Objective:
-        Maximize: downloadPeer - removedPeer
+        Maximize: downloadPeer - 3/4 * removedPeer
     """
 
     def __init__(self, *, removeCand, downloadCand, qb: qBittorrent):
@@ -432,7 +436,12 @@ class MPSolver:
             self.removeList = self.removeCand
             return
 
-        self.maxDownloads = qb.get_preference("max_active_downloads")
+        maxDownloads = qb.get_preference("max_active_downloads")
+        if maxDownloads > 0:
+            maxDownloads -= qb.stateCounter["downloading"]
+            if maxDownloads <= 0:
+                return
+        self.maxDownloads = maxDownloads
         self._solve()
 
     def _solve(self):
@@ -443,14 +452,14 @@ class MPSolver:
         removeCand = self.removeCand
 
         sizeCoef = [t.size for t in downloadCand]
-        peerCoef = [t.peer for t in downloadCand]
+        peerCoef = [4 * t.peer for t in downloadCand]
         pool = [model.NewBoolVar(f"DL_{i}") for i in range(len(downloadCand))]
 
         if self.maxDownloads > 0:
             model.Add(cp_model.LinearExpr.Sum(pool) <= self.maxDownloads)
 
         sizeCoef.extend(-t.size for t in removeCand)
-        peerCoef.extend(-t.peer for t in removeCand)
+        peerCoef.extend(-3 * t.peer for t in removeCand)
         pool.extend(model.NewBoolVar(f"RM_{i}") for i in range(len(removeCand)))
 
         model.Add(cp_model.LinearExpr.ScalProd(pool, sizeCoef) <= self.freeSpace)
@@ -656,7 +665,7 @@ def main():
 
         if not _debug:
             qb.remove_torrents(solver.removeList)
-            qb.add_torrent(solver.downloadList, mteam.download(solver.downloadList))
+            mteam.download(solver.downloadList)
 
     qb.resume_paused()
     qb.dump_data()
