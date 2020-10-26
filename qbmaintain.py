@@ -151,8 +151,8 @@ class qBittorrent:
         except (TypeError, AttributeError):
             self.torrentFrame = torrentRow
 
-    def _request(self, path: str, **kwargs):
-        res = requests.get(self.api_base + path, **kwargs, timeout=7)
+    def _request(self, path: str, *, method: str = "GET", **kwargs):
+        res = requests.request(method, self.api_base + path, timeout=7, **kwargs)
         res.raise_for_status()
         return res
 
@@ -247,9 +247,10 @@ class qBittorrent:
     def remove_torrents(self, removeList: tuple):
         if not removeList:
             return
-        path = "torrents/delete"
-        payload = {"hashes": "|".join(i.hash for i in removeList), "deleteFiles": True}
-        self._request(path, params=payload)
+        self._request(
+            "torrents/delete",
+            params={"hashes": "|".join(i.hash for i in removeList), "deleteFiles": True},
+        )
         for v in removeList:
             log.record("Remove", v.size, v.title)
 
@@ -263,8 +264,7 @@ class qBittorrent:
         if not contents:
             return
         try:
-            res = requests.post(self.api_base + "torrents/add", files=contents)
-            res.raise_for_status()
+            self._request(self.api_base + "torrents/add", method="POST", files=contents)
         except requests.RequestException as e:
             log.record("Error", None, e)
             return
@@ -285,9 +285,7 @@ class qBittorrent:
         if not self.torrentState.isdisjoint({"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}):
             print("Resume torrents.")
             if not _debug:
-                path = "torrents/resume"
-                payload = {"hashes": "all"}
-                self._request(path, params=payload)
+                self._request("torrents/resume", params={"hashes": "all"})
 
 
 class MTeam:
@@ -418,7 +416,7 @@ class MPSolver:
         2: total download <= qBittorrent max_active_downloads
 
     Objective:
-        Maximize: downloadPeer * 2 - removedPeer
+        Maximize: downloadPeer - removedPeer
     """
 
     def __init__(self, *, removeCand, downloadCand, qb: qBittorrent):
@@ -445,7 +443,7 @@ class MPSolver:
         removeCand = self.removeCand
 
         sizeCoef = [t.size for t in downloadCand]
-        peerCoef = [t.peer * 2 for t in downloadCand]
+        peerCoef = [t.peer for t in downloadCand]
         pool = [model.NewBoolVar(f"DL_{i}") for i in range(len(downloadCand))]
 
         if self.maxDownloads > 0:
