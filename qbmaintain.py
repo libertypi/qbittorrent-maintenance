@@ -19,17 +19,17 @@ now = pd.Timestamp.now()
 byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGTP"), (1024 ** s for s in range(1, 6))) for u in us}
 
 
-class AlertQue(list):
-    """Heap que to create and manage alert.
+class AlarmClock(list):
+    """Heap que to create and manage alarms.
 
-    Internally, alerts are stord as tuples: (time, type)
+    Internally, alarms are stord as tuples: (time, type)
     """
 
     SKIP = 0
     FETCH = 1
 
-    def get_alert(self):
-        """Get the most recent alert, if any.
+    def get_alarm(self):
+        """Get the most recent alarm, if any.
 
         SKIP will be returned during its duration, others only once.
         """
@@ -40,12 +40,11 @@ class AlertQue(list):
                 return heappop(self)[1]
             heappop(self)
 
-    def add_alert(self, start: pd.Timestamp, span: str, _type: int):
-        """Add a new alert to the que.
+    def add_alarm(self, start: pd.Timestamp, span: str, _type: int):
+        """Add a new alarm to the que.
 
         span can start with "+-".
         """
-
         if span.startswith("+-"):
             offset = pd.Timedelta(span.lstrip("+-"))
             start, stop = start - offset, start + offset
@@ -57,7 +56,7 @@ class AlertQue(list):
 
         heappush(self, (pd.Interval(start, stop, closed="both"), _type))
 
-    def clear_current_alert(self):
+    def clear_current_alarm(self):
         while self and now in self[0][0]:
             heappop(self)
 
@@ -92,13 +91,13 @@ class qBittorrent:
 
         self.speedFrame: pd.DataFrame
         self.torrentFrame: pd.DataFrame
-        self.alertQue: AlertQue
+        self.alarmClock: AlarmClock
         self.mteamHistory: set
         self.session: requests.Session
 
         try:
             with self.datafile.open(mode="rb") as f:
-                self.speedFrame, self.torrentFrame, self.alertQue, self.mteamHistory, self.session = pickle.load(f)
+                self.speedFrame, self.torrentFrame, self.alarmClock, self.mteamHistory, self.session = pickle.load(f)
 
         except Exception as e:
             if self.datafile.exists() and not _debug:
@@ -106,7 +105,7 @@ class qBittorrent:
                 self.datafile.rename(f"{self.datafile}_{now.strftime('%y%m%d_%H%M%S')}")
 
             self.speedFrame = self.torrentFrame = None
-            self.alertQue = AlertQue()
+            self.alarmClock = AlarmClock()
             self.mteamHistory = set()
             self.init_session()
 
@@ -115,7 +114,7 @@ class qBittorrent:
             return
         try:
             with self.datafile.open("wb") as f:
-                pickle.dump((self.speedFrame, self.torrentFrame, self.alertQue, self.mteamHistory, self.session), f)
+                pickle.dump((self.speedFrame, self.torrentFrame, self.alarmClock, self.mteamHistory, self.session), f)
         except (OSError, pickle.PickleError) as e:
             msg = f"Writing data to disk failed: {e}"
             log.record("Error", None, msg)
@@ -186,7 +185,7 @@ class qBittorrent:
                     log.record("Cleanup", None, path.name)
 
     def need_action(self) -> bool:
-        """True if speed is low, space is low, or an alert is near."""
+        """True if speed is low, space is low, or an alarm is near."""
 
         realSpace = self.state["free_space_on_disk"]
         try:
@@ -200,9 +199,9 @@ class qBittorrent:
         if self.freeSpace < 0:
             return True
 
-        alert = self.alertQue.get_alert()
-        if alert is not None:
-            return alert == AlertQue.FETCH
+        alarm = self.alarmClock.get_alarm()
+        if alarm is not None:
+            return alarm == AlarmClock.FETCH
 
         hi = self.speedFrame.iloc[-1]
         lo = self.speedFrame.iloc[0]
@@ -257,10 +256,10 @@ class qBittorrent:
             log.record("Remove", v.size, v.title)
 
     def add_torrent(self, downloadList: tuple, content: dict):
-        """Upload torrents and clear recent alerts.
+        """Upload torrents and clear recent alarms.
 
-        When a timelimited free torrent being added, an alert will be set on its expiry date.
-        When new downloads were made, alerts on current time will be cleared.
+        When a timelimited free torrent being added, an alarm will be set on its expiry date.
+        When new downloads were made, alarms on current time will be cleared.
         """
         try:
             self._request("torrents/add", method="POST", files=content)
@@ -275,10 +274,10 @@ class qBittorrent:
             except ValueError:
                 continue
             if pd.notna(expire):
-                self.alertQue.add_alert(expire, "2H", AlertQue.FETCH)
+                self.alarmClock.add_alarm(expire, "2H", AlarmClock.FETCH)
 
-        self.alertQue.clear_current_alert()
-        self.alertQue.add_alert(now, f"{len(downloadList)}H", AlertQue.SKIP)
+        self.alarmClock.clear_current_alarm()
+        self.alarmClock.add_alarm(now, f"{len(downloadList)}H", AlarmClock.SKIP)
         return True
 
     def resume_paused(self):
@@ -331,6 +330,7 @@ class MTeam:
     def fetch(self):
         from bs4 import BeautifulSoup
 
+        A, B = self.minPeer
         re_download = re_compile(r"\bdownload\.php\?")
         re_details = re_compile(r"\bdetails\.php\?")
         re_nondigit = re_compile(r"[^0-9]+")
@@ -339,7 +339,6 @@ class MTeam:
         re_timelimit = re_compile(r"^\s*限時：")
         transTable = str.maketrans({"日": "D", "時": "H", "分": "T"})
         cols = {}
-        A, B = self.minPeer
 
         print(f"Connecting to M-Team... Feeds: {len(self.feeds)}.")
 
@@ -534,9 +533,9 @@ def report(qb: qBittorrent, solver: MPSolver):
 
     print(sepSlim)
     print(
-        "Alert que: {}. Nearest: {}.".format(
-            len(qb.alertQue),
-            qb.alertQue[0][0].left.strftime("%F %T") if qb.alertQue else "NaT",
+        "Alarm clock: {}. Nearest: {}.".format(
+            len(qb.alarmClock),
+            qb.alarmClock[0][0].left.strftime("%F %T") if qb.alarmClock else "NaT",
         )
     )
     print(
