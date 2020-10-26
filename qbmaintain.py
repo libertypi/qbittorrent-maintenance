@@ -270,8 +270,7 @@ class qBittorrent:
                 print(f"Reading '{self.datafile}' failed: {e}")
                 self.datafile.rename(f"{self.datafile}_{now.strftime('%y%m%d_%H%M%S')}")
 
-            self.speedFrame = pd.DataFrame()
-            self.torrentFrame = pd.DataFrame()
+            self.speedFrame = self.torrentFrame = None
             self.alertQue = AlertQue()
             self.mteamHistory = set()
             self.init_session()
@@ -396,7 +395,7 @@ class MTeam:
 
     def download(self, downloadList: tuple):
         try:
-            content = {f"{t.tid}.torrent": self._get(t.link).content for t in downloadList}
+            content = {t.tid: self._get(t.link).content for t in downloadList}
         except AttributeError:
             print(f"Downloading torrents failed.")
         else:
