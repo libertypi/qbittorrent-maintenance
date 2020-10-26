@@ -11,7 +11,7 @@ from urllib.parse import urljoin
 import pandas as pd
 import requests
 
-Alert = namedtuple("Alert", ("interval", "type"))
+Alert = namedtuple("Alert", ("time", "type"))
 Removable = namedtuple("Removable", ("hash", "size", "peer", "title"))
 Torrent = namedtuple("Torrent", ("tid", "size", "peer", "title", "link", "expire"))
 
@@ -30,8 +30,8 @@ class AlertQue(list):
 
         SKIP will be returned during its duration, others only once.
         """
-        while self and now >= self[0].interval.left:
-            if now in self[0].interval:
+        while self and now >= self[0].time.left:
+            if now in self[0].time:
                 if self[0].type == self.SKIP:
                     return self.SKIP
                 return heappop(self).type
@@ -40,36 +40,27 @@ class AlertQue(list):
     def add_alert(self, start: pd.Timestamp, span: str, _type: int):
         """Add a new alert to the que.
 
-        span decide the duration, can also start with "-" and "+-".
+        if span is None, "+-1H" will be applied.
         """
-        offset = pd.Timedelta(span.lstrip("+-"))
-        if span.startswith("+-"):
+
+        if span is None:
+            offset = pd.Timedelta("1H")
             start, stop = start - offset, start + offset
-        elif span.startswith("-"):
-            start, stop = start - offset, start
         else:
+            offset = pd.Timedelta(span)
             stop = start + offset
-        heappush(
-            self,
-            Alert(interval=pd.Interval(start, stop, closed="both"), type=_type),
-        )
+            if start > stop:
+                start, stop = stop, start
+
+        heappush(self, Alert(time=pd.Interval(start, stop, closed="both"), type=_type))
 
     def clear_current_alert(self):
-        while self and now in self[0].interval:
+        while self and now in self[0].time:
             heappop(self)
 
 
 class qBittorrent:
-
-    template = (
-        ("speedFrame", pd.DataFrame),
-        ("torrentFrame", pd.DataFrame),
-        ("alertQue", AlertQue),
-        ("mteamHistory", set),
-        ("session", requests.Session),
-    )
-
-    def __init__(self, *, host: str, seedDir: str, speedThresh: tuple, spaceQuota: int, datafile: Path):
+    def __init__(self, *, host: str, seedDir: str, speedThresh: tuple, spaceQuota: float, datafile: Path):
 
         self.api_base = urljoin(host, "api/v2/")
         maindata = self._request("sync/maindata").json()
@@ -84,8 +75,8 @@ class qBittorrent:
         except TypeError:
             self.seedDir = None
 
-        self.upSpeedThresh, self.dlSpeedThresh = (int(i * byteUnit["MiB"]) for i in speedThresh)
-        self.spaceQuota = int(spaceQuota * byteUnit["GiB"])
+        self.upSpeedThresh, self.dlSpeedThresh = (i * byteUnit["MiB"] for i in speedThresh)
+        self.spaceQuota = spaceQuota * byteUnit["GiB"]
         self.torrentState = {i["state"] for i in self.torrents.values()}
         self._preferences = None
 
@@ -93,49 +84,13 @@ class qBittorrent:
         self._load_data()
         self._record()
 
-    def _load_data(self):
-        """Load Data object from pickle."""
-        try:
-            with self.datafile.open(mode="rb") as f:
-                data = pickle.load(f)
-
-            if not all(isinstance(data[x], y) for x, y in self.template):
-                raise Exception("Data corrupted.")
-
-            self.speedFrame: pd.DataFrame = data["speedFrame"]
-            self.torrentFrame: pd.DataFrame = data["torrentFrame"]
-            self.alertQue: AlertQue = data["alertQue"]
-            self.mteamHistory: set = data["mteamHistory"]
-            self.session: requests.Session = data["session"]
-
-        except Exception as e:
-            if self.datafile.exists() and not _debug:
-                print(f"Loading data from '{self.datafile}' failed: {e}")
-                self.datafile.rename(f"{self.datafile}_{now.strftime('%y%m%d_%H%M%S')}")
-
-            for name, obj in self.template:
-                setattr(self, name, obj())
-            self.init_session()
-
-    def init_session(self):
-        """Initialize a new requests session."""
-        self.session = requests.session()
-        self.session.headers.update(
-            {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) Gecko/20100101 Firefox/80.0"}
-        )
-        return self.session
-
     def _record(self):
         """Record qBittorrent traffic data to pandas DataFrame."""
 
         speedRow = pd.DataFrame(
-            {"upload": self.state["alltime_ul"], "download": self.state["alltime_dl"]},
-            index=(now,),
+            {"upload": self.state["alltime_ul"], "download": self.state["alltime_dl"]}, index=(now,)
         )
-        torrentRow = pd.DataFrame(
-            {k: v["uploaded"] for k, v in self.torrents.items()},
-            index=(now,),
-        )
+        torrentRow = pd.DataFrame({k: v["uploaded"] for k, v in self.torrents.items()}, index=(now,))
 
         try:
             self.speedFrame = self.speedFrame.truncate(before=(now - pd.Timedelta("1H")), copy=False).append(speedRow)
@@ -188,13 +143,13 @@ class qBittorrent:
     def need_action(self) -> bool:
         """True if speed is low, space is low, or an alert is near."""
 
-        realSpace: int = self.state["free_space_on_disk"]
+        realSpace = self.state["free_space_on_disk"]
         try:
             realSpace = max(realSpace, disk_usage(self.seedDir).free)
         except TypeError:
             pass
 
-        self.freeSpace = realSpace - self.spaceQuota - sum(i["amount_left"] for i in self.torrents.values())
+        self.freeSpace = int(realSpace - self.spaceQuota - sum(i["amount_left"] for i in self.torrents.values()))
         if self.freeSpace < 0:
             return True
 
@@ -265,7 +220,7 @@ class qBittorrent:
         try:
             res = requests.post(self.api_base + "torrents/add", files=contents)
             res.raise_for_status()
-        except requests.exceptions as e:
+        except requests.RequestException as e:
             log.record("Error", None, e)
             return
 
@@ -276,7 +231,7 @@ class qBittorrent:
             except ValueError:
                 continue
             if pd.notna(expire):
-                self.alertQue.add_alert(expire, "+-1H", AlertQue.FETCH)
+                self.alertQue.add_alert(expire, None, AlertQue.FETCH)
 
         self.alertQue.clear_current_alert()
         self.alertQue.add_alert(now, f"{len(downloadList)}H", AlertQue.SKIP)
@@ -289,13 +244,44 @@ class qBittorrent:
                 payload = {"hashes": "all"}
                 self._request(path, params=payload)
 
+    def init_session(self):
+        """Initialize a new requests session."""
+        self.session = requests.session()
+        self.session.headers.update(
+            {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) Gecko/20100101 Firefox/80.0"}
+        )
+        return self.session
+
+    def _load_data(self):
+        """Load data objects from pickle."""
+
+        self.speedFrame: pd.DataFrame
+        self.torrentFrame: pd.DataFrame
+        self.alertQue: AlertQue
+        self.mteamHistory: set
+        self.session: requests.Session
+
+        try:
+            with self.datafile.open(mode="rb") as f:
+                self.speedFrame, self.torrentFrame, self.alertQue, self.mteamHistory, self.session = pickle.load(f)
+
+        except Exception as e:
+            if self.datafile.exists() and not _debug:
+                print(f"Reading '{self.datafile}' failed: {e}")
+                self.datafile.rename(f"{self.datafile}_{now.strftime('%y%m%d_%H%M%S')}")
+
+            self.speedFrame = pd.DataFrame()
+            self.torrentFrame = pd.DataFrame()
+            self.alertQue = AlertQue()
+            self.mteamHistory = set()
+            self.init_session()
+
     def dump_data(self):
-        data = {k: getattr(self, k) for k, _ in self.template}
         if _debug:
             return
         try:
             with self.datafile.open("wb") as f:
-                pickle.dump(data, f)
+                pickle.dump((self.speedFrame, self.torrentFrame, self.alertQue, self.mteamHistory, self.session), f)
         except (OSError, pickle.PickleError) as e:
             msg = f"Writing data to disk failed: {e}"
             log.record("Error", None, msg)
@@ -402,9 +388,11 @@ class MTeam:
                     title = tr[colTitle].find("a", href=re_details, string=True)
                     title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
 
-                    yield Torrent(tid=tid, size=size, peer=peer, title=title, link=link, expire=expire)
                 except Exception as e:
                     print("Parsing page error:", e)
+
+                else:
+                    yield Torrent(tid=tid, size=size, peer=peer, title=title, link=link, expire=expire)
 
     def download(self, downloadList: tuple):
         try:
@@ -444,7 +432,6 @@ class MPSolver:
             self.removeList = self.removeCand
             return
 
-        self.qb = qb
         self.maxDownloads = qb.get_preference("max_active_downloads")
         self._solve()
 
@@ -484,75 +471,6 @@ class MPSolver:
         else:
             self.status = solver.StatusName(status)
 
-    def report(self):
-        try:
-            status = self.status
-        except AttributeError:
-            print("Solver did not start: unnecessary conditions.")
-            return
-
-        sepSlim = "-" * 50
-        removeSize = sum(i.size for i in self.removeList)
-        downloadSize = sum(i.size for i in self.downloadList)
-        finalFreeSpace = self.freeSpace + removeSize - downloadSize
-        alertQue = self.qb.alertQue
-
-        print(sepSlim)
-        print(
-            "Alert que: {}. Nearest: {}.".format(
-                len(alertQue),
-                alertQue[0].interval.left.strftime("%F %T") if alertQue else "NaT",
-            )
-        )
-        print(
-            "Disk free space: {}. Max avail space: {}.".format(
-                humansize(self.freeSpace),
-                humansize(self.freeSpace + self.removeCandSize),
-            )
-        )
-        print(
-            "Download candidates: {}. Total: {}. Limit: {}.".format(
-                len(self.downloadCand),
-                humansize(sum(i.size for i in self.downloadCand)),
-                self.maxDownloads,
-            )
-        )
-        print(
-            "Remove candidates: {}/{}. Total: {}. Break: {}/s.".format(
-                len(self.removeCand),
-                len(self.qb.torrents),
-                humansize(self.removeCandSize),
-                humansize(self.qb.breaks),
-            )
-        )
-        for v in self.removeCand:
-            print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
-
-        print(sepSlim)
-        if isinstance(status, dict):
-            print("{status} solution found in {walltime:.5f} seconds, objective value: {value}.".format_map(status))
-        else:
-            print("CP-SAT solver cannot find an optimal solution. Status:", status)
-
-        print(f"Free space left after operation: {humansize(self.freeSpace)} => {humansize(finalFreeSpace)}.")
-
-        for prefix in "remove", "download":
-            final = getattr(self, prefix + "List")
-            cand = getattr(self, prefix + "Cand")
-            size = locals()[prefix + "Size"]
-            print(sepSlim)
-            print(
-                "{}: {}/{}. Total: {}, {} peers.".format(
-                    prefix.capitalize(),
-                    len(final),
-                    len(cand),
-                    humansize(size),
-                    sum(i.peer for i in final),
-                )
-            )
-            for v in final:
-                print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
-
 
 class Log(list):
     def record(self, action, size, name):
@@ -591,6 +509,75 @@ def humansize(size: int):
     except TypeError:
         pass
     return "NaN"
+
+
+def report(qb: qBittorrent, solver: MPSolver):
+    try:
+        status = solver.status
+    except AttributeError:
+        print("Solver did not start: unnecessary conditions.")
+        return
+
+    sepSlim = "-" * 50
+    removeSize = sum(i.size for i in solver.removeList)
+    downloadSize = sum(i.size for i in solver.downloadList)
+    finalFreeSpace = qb.freeSpace + removeSize - downloadSize
+
+    print(sepSlim)
+    print(
+        "Alert que: {}. Nearest: {}.".format(
+            len(qb.alertQue),
+            qb.alertQue[0].time.left.strftime("%F %T") if qb.alertQue else "NaT",
+        )
+    )
+    print(
+        "Disk free space: {}. Max avail space: {}.".format(
+            humansize(qb.freeSpace),
+            humansize(qb.freeSpace + solver.removeCandSize),
+        )
+    )
+    print(
+        "Download candidates: {}. Total: {}. Limit: {}.".format(
+            len(solver.downloadCand),
+            humansize(sum(i.size for i in solver.downloadCand)),
+            solver.maxDownloads,
+        )
+    )
+    print(
+        "Remove candidates: {}/{}. Total: {}. Break: {}/s.".format(
+            len(solver.removeCand),
+            len(qb.torrents),
+            humansize(solver.removeCandSize),
+            humansize(qb.breaks),
+        )
+    )
+    for v in solver.removeCand:
+        print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
+
+    print(sepSlim)
+    if isinstance(status, dict):
+        print("{status} solution found in {walltime:.5f} seconds, objective value: {value}.".format_map(status))
+    else:
+        print("CP-SAT solver cannot find an optimal solution. Status:", status)
+
+    print(f"Free space left after operation: {humansize(qb.freeSpace)} => {humansize(finalFreeSpace)}.")
+
+    for prefix in "remove", "download":
+        final = getattr(solver, prefix + "List")
+        cand = getattr(solver, prefix + "Cand")
+        size = locals()[prefix + "Size"]
+        print(sepSlim)
+        print(
+            "{}: {}/{}. Total: {}, {} peers.".format(
+                prefix.capitalize(),
+                len(final),
+                len(cand),
+                humansize(size),
+                sum(i.peer for i in final),
+            )
+        )
+        for v in final:
+            print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
 
 
 def init_config(configfile: Path):
@@ -665,7 +652,7 @@ def main():
             downloadCand=mteam.fetch(),
             qb=qb,
         )
-        solver.report()
+        report(qb, solver)
 
         if not _debug:
             qb.remove_torrents(solver.removeList)
