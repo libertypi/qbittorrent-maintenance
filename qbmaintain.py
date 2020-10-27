@@ -1,22 +1,42 @@
 import pickle
 import sys
-from collections import Counter, namedtuple
+from collections import Counter
 from configparser import ConfigParser
 from heapq import heappop, heappush
 from pathlib import Path
 from re import compile as re_compile
 from shutil import disk_usage, rmtree
+from typing import Iterable, Iterator, Mapping, NamedTuple, Sequence, Union
 from urllib.parse import urljoin
 
 import pandas as pd
 import requests
 
-Removable = namedtuple("Removable", ("hash", "size", "peer", "title"))
-Torrent = namedtuple("Torrent", ("tid", "size", "peer", "title", "link", "expire"))
-
+NOW = pd.Timestamp.now()
 _debug: bool = False
-now = pd.Timestamp.now()
-byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGTP"), (1024 ** s for s in range(1, 6))) for u in us}
+byteUnit: Mapping[str, int] = {
+    u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGTP"), (1024 ** s for s in range(1, 6))) for u in us
+}
+
+
+class Removable(NamedTuple):
+    """Removable torrents in qBittorrent list."""
+
+    hash: str
+    size: int
+    peer: int
+    title: str
+
+
+class Torrent(NamedTuple):
+    """Torrents to be downloaded from web."""
+
+    tid: str
+    size: int
+    peer: int
+    title: str
+    link: str
+    expire: str
 
 
 class AlarmClock:
@@ -39,14 +59,14 @@ class AlarmClock:
             alarm = self._data[0]
             return f'{alarm[0].left.strftime("%F %T")} [#{alarm[1]}]'
 
-    def get_alarm(self):
+    def get_alarm(self) -> Union[int, None]:
         """Get the most recent alarm, if any.
 
         Returns SKIP during its duration, others only once.
         """
         data = self._data
-        while data and now >= data[0][0].left:
-            if now in data[0][0]:
+        while data and NOW >= data[0][0].left:
+            if NOW in data[0][0]:
                 if data[0][1] == self.SKIP:
                     return self.SKIP
                 return heappop(data)[1]
@@ -69,7 +89,7 @@ class AlarmClock:
         heappush(self._data, (pd.Interval(start, stop, closed="both"), _type))
 
     def clear_current_alarm(self):
-        while self._data and now in self._data[0][0]:
+        while self._data and NOW in self._data[0][0]:
             heappop(self._data)
 
 
@@ -116,9 +136,9 @@ logger = Logger()
 
 
 class qBittorrent:
-    """The main manager class to manage qBittorrent and data persistence."""
+    """The manager class to communicate with qBittorrent and manange data persistence."""
 
-    def __init__(self, *, host: str, seedDir: str, speedThresh: tuple, spaceQuota: float, datafile: Path):
+    def __init__(self, *, host: str, seedDir: str, speedThresh: Sequence[float], spaceQuota: float, datafile: Path):
 
         self.api_base = urljoin(host, "api/v2/")
         maindata = self._request("sync/maindata").json()
@@ -158,7 +178,7 @@ class qBittorrent:
             if self.datafile.exists():
                 print(f"Reading '{self.datafile}' failed: {e}")
                 if not _debug:
-                    self.datafile.rename(f"{self.datafile}_{now.strftime('%y%m%d_%H%M%S')}")
+                    self.datafile.rename(f"{self.datafile}_{NOW.strftime('%y%m%d_%H%M%S')}")
 
             self.speedFrame = self.torrentFrame = None
             self.alarmClock = AlarmClock()
@@ -166,18 +186,23 @@ class qBittorrent:
             self.init_session()
 
     def dump_data(self):
+        """Save data to disk."""
+
         if _debug:
             return
+
         try:
             with self.datafile.open("wb") as f:
                 pickle.dump((self.speedFrame, self.torrentFrame, self.alarmClock, self.mteamHistory, self.session), f)
+
         except (OSError, pickle.PickleError) as e:
             msg = f"Writing data to disk failed: {e}"
             logger.record("Error", None, msg)
             print(msg)
 
     def init_session(self):
-        """Initialize a new requests session."""
+        """Instantiate a new requests session."""
+
         self.session = requests.Session()
         self.session.headers.update(
             {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) Gecko/20100101 Firefox/80.0"}
@@ -185,15 +210,16 @@ class qBittorrent:
         return self.session
 
     def _record(self):
-        """Record qBittorrent traffic data to pandas DataFrame."""
+        """Record qBittorrent traffic info to pandas DataFrame."""
 
         speedRow = pd.DataFrame(
-            {"upload": self.state["alltime_ul"], "download": self.state["alltime_dl"]}, index=(now,)
+            {"upload": self.state["alltime_ul"], "download": self.state["alltime_dl"]}, index=(NOW,)
         )
-        torrentRow = pd.DataFrame({k: v["uploaded"] for k, v in self.torrents.items()}, index=(now,))
+        torrentRow = pd.DataFrame({k: v["uploaded"] for k, v in self.torrents.items()}, index=(NOW,))
 
         try:
-            self.speedFrame = self.speedFrame.truncate(before=(now - pd.Timedelta("1H")), copy=False).append(speedRow)
+            self.speedFrame = self.speedFrame.truncate(before=(NOW - pd.Timedelta("1H")), copy=False).append(speedRow)
+
         except (TypeError, AttributeError):
             self.speedFrame = speedRow
 
@@ -202,21 +228,30 @@ class qBittorrent:
             if not diff.empty:
                 self.torrentFrame.drop(columns=diff, inplace=True, errors="ignore")
                 self.torrentFrame.dropna(how="all", inplace=True)
+
             self.torrentFrame = self.torrentFrame.append(torrentRow)
+
         except (TypeError, AttributeError):
             self.torrentFrame = torrentRow
 
     def _request(self, path: str, *, method: str = "GET", **kwargs):
+        """Communicate with qBittorrent API."""
+
         res = requests.request(method, self.api_base + path, timeout=7, **kwargs)
         res.raise_for_status()
         return res
 
     def get_preference(self, key: str):
+        """Query qBittorrent preferences by key."""
+
         if not hasattr(self, "_preferences"):
             self._preferences = self._request("app/preferences").json()
+
         return self._preferences[key]
 
     def clean_seedDir(self):
+        """Clean files in seed dir which does not belong to qb download list."""
+
         try:
             listdir = self.seedDir.iterdir()
         except AttributeError:
@@ -270,16 +305,20 @@ class qBittorrent:
             and not 0 < self.state["up_rate_limit"] < self.upSpeedThresh
         )
 
-    def get_remove_cands(self):
+    def get_remove_cands(self) -> Iterator[Removable]:
         """Discover the slowest torrents using jenks natural breaks."""
+
         from jenkspy import jenks_breaks
 
         df = self.torrentFrame = self.torrentFrame.truncate(
-            before=(now - pd.Timedelta("24H")),
+            before=(NOW - pd.Timedelta("24H")),
             copy=False,
         )
+
         hi = df.iloc[-1]
         lo = df.apply(pd.Series.first_valid_index)
+
+        speeds: pd.Series
         speeds = (hi.values - df.lookup(lo, lo.index)) // (hi.name - lo).dt.total_seconds()
         speeds.dropna(inplace=True)
 
@@ -288,6 +327,7 @@ class qBittorrent:
             if c > 3:
                 c = 3
             self.breaks = jenks_breaks(speeds, nb_class=c)[1]
+
         except Exception as e:
             print("Jenkspy failed:", e)
             self.breaks = speeds.mean()
@@ -297,11 +337,19 @@ class qBittorrent:
         for k in speeds.loc[speeds <= self.breaks].index:
             v = self.torrents[k]
             if v["added_on"] < oneDayAgo:
-                yield Removable(hash=k, size=v["size"], peer=v["num_incomplete"], title=v["name"])
+                yield Removable(
+                    hash=k,
+                    size=v["size"],
+                    peer=v["num_incomplete"],
+                    title=v["name"],
+                )
 
-    def remove_torrents(self, removeList: tuple):
+    def remove_torrents(self, removeList: Sequence[Removable]):
+        """Remove torrents and files."""
+
         if not removeList or _debug:
             return
+
         self._request(
             "torrents/delete",
             params={"hashes": "|".join(i.hash for i in removeList), "deleteFiles": True},
@@ -309,34 +357,38 @@ class qBittorrent:
         for v in removeList:
             logger.record("Remove", v.size, v.title)
 
-    def add_torrent(self, downloadList: tuple, content: dict):
+    def add_torrent(self, downloadList: Sequence[Torrent], content: Mapping[str, bytes]):
         """Upload torrents and clear recent alarms.
 
         When a timelimited free torrent being added, an alarm will be set on its expiry date.
         When new downloads were made, alarms on current time will be cleared.
         """
-        try:
-            if not _debug:
+
+        if not _debug:
+            try:
                 self._request("torrents/add", method="POST", files=content)
-        except requests.RequestException as e:
-            logger.record("Error", None, e)
-            return False
+            except requests.RequestException as e:
+                logger.record("Error", None, e)
+                return False
 
         for t in downloadList:
             logger.record("Download", t.size, t.title)
             try:
-                expire = now + pd.Timedelta(t.expire)
+                expire = NOW + pd.Timedelta(t.expire)
             except ValueError:
                 continue
             if pd.notna(expire):
                 self.alarmClock.set_alarm(expire, "2H", AlarmClock.FETCH)
 
         self.alarmClock.clear_current_alarm()
-        self.alarmClock.set_alarm(now, f"{len(downloadList)}H", AlarmClock.SKIP)
+        self.alarmClock.set_alarm(NOW, f"{len(downloadList)}H", AlarmClock.SKIP)
         return True
 
     def resume_paused(self):
+        """If any torrent is paused, for any reason, resume."""
+
         paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
+
         if not paused.isdisjoint(self.stateCounter):
             print("Resume torrents.")
             if not _debug:
@@ -348,9 +400,10 @@ class MTeam:
 
     domain = "https://pt.m-team.cc"
 
-    def __init__(self, *, feeds: list, account: tuple, minPeer: tuple, qb: qBittorrent):
+    def __init__(self, *, feeds: Iterable[str], account: Iterable[str], minPeer: Iterable[float], qb: qBittorrent):
         """The minimum peer requirement subjects to: Peer >= A * Size(GiB) + B
         Where (A, B) is defined in config file and passed via "minPeer"."""
+
         self.feeds = feeds
         self.account = account
         self.minPeer = minPeer[0] / byteUnit["GiB"], minPeer[1]
@@ -359,6 +412,7 @@ class MTeam:
         self.history = qb.mteamHistory
 
     def _get(self, path: str):
+
         url = urljoin(self.domain, path)
         for retry in range(3):
             try:
@@ -374,6 +428,7 @@ class MTeam:
                 self.session = self.qb.init_session()
 
     def _login(self):
+
         if not hasattr(self, "loginParam"):
             self.loginParam = {
                 "url": f"{self.domain}/takelogin.php",
@@ -382,7 +437,8 @@ class MTeam:
             }
         self.session.post(**self.loginParam)
 
-    def fetch(self):
+    def fetch(self) -> Iterator[Torrent]:
+
         from bs4 import BeautifulSoup
 
         A, B = self.minPeer
@@ -404,13 +460,16 @@ class MTeam:
                 soup = (tr.find_all("td", recursive=False) for tr in soup.select("#form_torrent table.torrents > tr"))
                 tr = next(soup)
             except StopIteration:
-                print("Unable to locate torrent table, css selector broken?")
+                print("Unable to locate table, css selector broken?", feed)
+                continue
+            except AttributeError:
+                print("Connection failed:", feed)
                 continue
             except Exception as e:
-                print("Fetching feed failed:", e)
+                print("Parsing error:", e)
                 continue
             else:
-                print("Fetching feed success.")
+                print("Fetching success.")
 
             for i, td in enumerate(tr):
                 title = td.find(title=True)
@@ -432,7 +491,7 @@ class MTeam:
 
                     link = tr[colTitle].find("a", href=re_download)["href"]
                     tid = re_tid.search(link)["tid"]
-                    if tid in self.history or tid in visited or tr[colUp].get_text(strip=True) == "0":
+                    if tid in self.history or tr[colUp].get_text(strip=True) == "0" or tid in visited:
                         continue
 
                     expire = tr[colTitle].find(string=re_timelimit)
@@ -450,9 +509,12 @@ class MTeam:
                     visited.add(tid)
                     yield Torrent(tid=tid, size=size, peer=peer, title=title, link=link, expire=expire)
 
-    def download(self, downloadList: tuple):
+    def download(self, downloadList: Sequence[Torrent]):
+        """Download torrents from mteam, then pass the contents to qBittorrent class."""
+
         if not downloadList:
             return
+
         try:
             content = {t.tid: self._get(t.link).content for t in downloadList}
         except AttributeError:
@@ -479,10 +541,11 @@ class MPSolver:
         Maximize: downloadPeer - 3/4 * removedPeer
     """
 
-    def __init__(self, *, removeCand, downloadCand, qb: qBittorrent):
+    def __init__(self, *, removeCand: Iterable[Removable], downloadCand: Iterable[Torrent], qb: qBittorrent):
+
         self.downloadList = self.removeList = ()
-        self.downloadCand = tuple(downloadCand)
         self.freeSpace = qb.freeSpace
+        self.downloadCand = tuple(downloadCand)
         if not (self.downloadCand or self.freeSpace < 0 or _debug):
             return
 
@@ -492,15 +555,17 @@ class MPSolver:
             self.removeList = self.removeCand
             return
 
-        maxDownloads = qb.get_preference("max_active_downloads")
+        maxDownloads: int = qb.get_preference("max_active_downloads")
         if maxDownloads > 0:
             maxDownloads -= qb.stateCounter["downloading"]
             if maxDownloads <= 0:
                 return
         self.maxDownloads = maxDownloads
+
         self._solve()
 
     def _solve(self):
+
         from ortools.sat.python import cp_model
 
         model = cp_model.CpModel()
@@ -537,8 +602,9 @@ class MPSolver:
             self.status = solver.StatusName(status)
 
 
-def humansize(size: int):
+def humansize(size: int) -> str:
     """Convert bytes to human readable sizes."""
+
     try:
         for suffix in ("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"):
             size /= 1024
@@ -550,6 +616,8 @@ def humansize(size: int):
 
 
 def report(qb: qBittorrent, solver: MPSolver):
+    """Output report information to stdout."""
+
     try:
         status = solver.status
     except AttributeError:
