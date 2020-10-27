@@ -136,7 +136,6 @@ class qBittorrent:
         self.upSpeedThresh, self.dlSpeedThresh = (i * byteUnit["MiB"] for i in speedThresh)
         self.spaceQuota = spaceQuota * byteUnit["GiB"]
         self.stateCounter = Counter(i["state"] for i in self.torrents.values())
-        self._preferences = self._freeSpace = None
 
         self.datafile = datafile
         self._load_data()
@@ -213,7 +212,7 @@ class qBittorrent:
         return res
 
     def get_preference(self, key: str):
-        if self._preferences is None:
+        if not hasattr(self, "_preferences"):
             self._preferences = self._request("app/preferences").json()
         return self._preferences[key]
 
@@ -229,7 +228,6 @@ class qBittorrent:
                 if path.suffix == ".!qB" and path.stem in names:
                     continue
                 print("Cleanup:", path.name)
-                self._freeSpace = None
                 try:
                     if _debug:
                         pass
@@ -242,20 +240,15 @@ class qBittorrent:
                 else:
                     logger.record("Cleanup", None, path.name)
 
-    @property
-    def freeSpace(self):
-        if self._freeSpace is None:
-            realSpace = self.state["free_space_on_disk"]
-            try:
-                realSpace = max(realSpace, disk_usage(self.seedDir).free)
-            except TypeError:
-                pass
-            self._freeSpace = int(realSpace - self.spaceQuota - sum(i["amount_left"] for i in self.torrents.values()))
-        return self._freeSpace
-
     def need_action(self) -> bool:
-        """True if speed is low, space is low, or an alarm is near."""
+        """True if speed is low, space is low, or an alarm is close."""
 
+        realSpace = self.state["free_space_on_disk"]
+        try:
+            realSpace = max(realSpace, disk_usage(self.seedDir).free)
+        except TypeError:
+            pass
+        self.freeSpace = int(realSpace - self.spaceQuota - sum(i["amount_left"] for i in self.torrents.values()))
         if self.freeSpace < 0:
             return True
 
@@ -360,10 +353,10 @@ class MTeam:
         Where (A, B) is defined in config file and passed via "minPeer"."""
         self.feeds = feeds
         self.account = account
+        self.minPeer = minPeer[0] / byteUnit["GiB"], minPeer[1]
         self.qb = qb
         self.session = qb.session
         self.history = qb.mteamHistory
-        self.minPeer = (minPeer[0] / byteUnit["GiB"], minPeer[1])
 
     def _get(self, path: str):
         url = urljoin(self.domain, path)
@@ -400,6 +393,7 @@ class MTeam:
         re_tid = re_compile(r"\bid=(?P<tid>[0-9]+)")
         re_timelimit = re_compile(r"^\s*限時：")
         transTable = str.maketrans({"日": "D", "時": "H", "分": "T"})
+        visited = set()
         cols = {}
 
         print(f"Connecting to M-Team... Feeds: {len(self.feeds)}.")
@@ -438,7 +432,7 @@ class MTeam:
 
                     link = tr[colTitle].find("a", href=re_download)["href"]
                     tid = re_tid.search(link)["tid"]
-                    if tid in self.history or tr[colUp].get_text(strip=True) == "0":
+                    if tid in self.history or tid in visited or tr[colUp].get_text(strip=True) == "0":
                         continue
 
                     expire = tr[colTitle].find(string=re_timelimit)
@@ -453,6 +447,7 @@ class MTeam:
                 except Exception as e:
                     print("Parsing page error:", e)
                 else:
+                    visited.add(tid)
                     yield Torrent(tid=tid, size=size, peer=peer, title=title, link=link, expire=expire)
 
     def download(self, downloadList: tuple):
