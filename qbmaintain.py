@@ -37,7 +37,7 @@ class AlarmClock:
     def nearest(self):
         if self._data:
             alarm = self._data[0]
-            return f'{alarm[0].left.strftime("%F %T")} (type: {alarm[1]})'
+            return f'{alarm[0].left.strftime("%F %T")} [#{alarm[1]}]'
 
     def get_alarm(self):
         """Get the most recent alarm, if any.
@@ -229,6 +229,7 @@ class qBittorrent:
                 if path.suffix == ".!qB" and path.stem in names:
                     continue
                 print("Cleanup:", path.name)
+                self._freeSpace = None
                 try:
                     if _debug:
                         pass
@@ -239,7 +240,6 @@ class qBittorrent:
                 except OSError as e:
                     print("Deletion Failed:", e)
                 else:
-                    self._freeSpace = None
                     logger.record("Cleanup", None, path.name)
 
     @property
@@ -259,9 +259,10 @@ class qBittorrent:
         if self.freeSpace < 0:
             return True
 
-        alarm = self.alarmClock.get_alarm()
-        if alarm is not None:
-            return alarm == AlarmClock.FETCH
+        if not hasattr(self, "thisAlarm"):
+            self.thisAlarm = self.alarmClock.get_alarm()
+        if self.thisAlarm is not None:
+            return self.thisAlarm == AlarmClock.FETCH
 
         hi = self.speedFrame.iloc[-1]
         lo = self.speedFrame.iloc[0]
@@ -567,9 +568,10 @@ def report(qb: qBittorrent, solver: MPSolver):
 
     print(sepSlim)
     print(
-        "Alarm clock: {}. Nearest: {}.".format(
+        "Alarm: {}. Nearest: {}. Current: [{}].".format(
             len(qb.alarmClock),
             qb.alarmClock.nearest(),
+            qb.thisAlarm,
         )
     )
     print(
