@@ -1,24 +1,23 @@
 import pickle
-import re
 import sys
 from collections import Counter
 from configparser import ConfigParser
 from heapq import heappop, heappush
 from pathlib import Path
+from re import compile as re_compile
 from shutil import disk_usage, rmtree
 from typing import Iterable, Iterator, Mapping, NamedTuple, Sequence, Union
 from urllib.parse import urljoin
 
 import pandas as pd
 import requests
-from requests.structures import CaseInsensitiveDict
 
-NOW = pd.Timestamp.now()
 _debug: bool = False
+NOW = pd.Timestamp.now()
 
-byteSize: Mapping[str, int] = CaseInsensitiveDict(
-    {k: v for kk, v in zip(((f"{c}B", f"{c}iB") for c in "KMGTP"), (1024 ** i for i in range(1, 6))) for k in kk}
-)
+byteSize: Mapping[str, int] = {
+    k: v for kk, v in zip(((f"{c}B", f"{c}iB") for c in "KMGTP"), (1024 ** i for i in range(1, 6))) for k in kk
+}
 
 
 class Removable(NamedTuple):
@@ -442,12 +441,12 @@ class MTeam:
         from bs4 import BeautifulSoup
 
         A, B = self.minPeer
-        re_download = re.compile(r"\bdownload\.php\?")
-        re_details = re.compile(r"\bdetails\.php\?")
-        re_nondigit = re.compile(r"[^0-9]+")
-        re_size = re.compile(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)", flags=re.I)
-        re_tid = re.compile(r"\bid=(?P<tid>[0-9]+)")
-        re_timelimit = re.compile(r"^\s*限時：")
+        re_download = re_compile(r"\bdownload\.php\?")
+        re_details = re_compile(r"\bdetails\.php\?")
+        re_nondigit = re_compile(r"[^0-9]+")
+        re_size = re_compile(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)")
+        re_tid = re_compile(r"\bid=(?P<tid>[0-9]+)")
+        re_timelimit = re_compile(r"^\s*限時：")
         transTable = str.maketrans({"日": "D", "時": "H", "分": "T"})
         visited = set()
         cols = {}
