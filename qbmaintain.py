@@ -52,7 +52,7 @@ class AlarmClock:
                 return heappop(data)[1]
             heappop(data)
 
-    def add_alarm(self, start: pd.Timestamp, span: str, _type: int):
+    def set_alarm(self, start: pd.Timestamp, span: str, _type: int):
         """Add a new alarm to the que.
 
         span can start with "+-".
@@ -136,7 +136,7 @@ class qBittorrent:
         self.upSpeedThresh, self.dlSpeedThresh = (i * byteUnit["MiB"] for i in speedThresh)
         self.spaceQuota = spaceQuota * byteUnit["GiB"]
         self.stateCounter = Counter(i["state"] for i in self.torrents.values())
-        self._preferences = None
+        self._preferences = self._freeSpace = None
 
         self.datafile = datafile
         self._load_data()
@@ -239,20 +239,23 @@ class qBittorrent:
                 except OSError as e:
                     print("Deletion Failed:", e)
                 else:
+                    self._freeSpace = None
                     logger.record("Cleanup", None, path.name)
+
+    @property
+    def freeSpace(self):
+        if self._freeSpace is None:
+            realSpace = self.state["free_space_on_disk"]
+            try:
+                realSpace = max(realSpace, disk_usage(self.seedDir).free)
+            except TypeError:
+                pass
+            self._freeSpace = int(realSpace - self.spaceQuota - sum(i["amount_left"] for i in self.torrents.values()))
+        return self._freeSpace
 
     def need_action(self) -> bool:
         """True if speed is low, space is low, or an alarm is near."""
 
-        realSpace = self.state["free_space_on_disk"]
-        try:
-            realSpace = max(realSpace, disk_usage(self.seedDir).free)
-        except TypeError:
-            pass
-
-        self.freeSpace = int(
-            realSpace - self.spaceQuota - sum(i["amount_left"] for i in self.torrents.values()),
-        )
         if self.freeSpace < 0:
             return True
 
@@ -332,10 +335,10 @@ class qBittorrent:
             except ValueError:
                 continue
             if pd.notna(expire):
-                self.alarmClock.add_alarm(expire, "2H", AlarmClock.FETCH)
+                self.alarmClock.set_alarm(expire, "2H", AlarmClock.FETCH)
 
         self.alarmClock.clear_current_alarm()
-        self.alarmClock.add_alarm(now, f"{len(downloadList)}H", AlarmClock.SKIP)
+        self.alarmClock.set_alarm(now, f"{len(downloadList)}H", AlarmClock.SKIP)
         return True
 
     def resume_paused(self):
