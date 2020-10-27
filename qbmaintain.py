@@ -1,22 +1,24 @@
 import pickle
+import re
 import sys
 from collections import Counter
 from configparser import ConfigParser
 from heapq import heappop, heappush
 from pathlib import Path
-from re import compile as re_compile
 from shutil import disk_usage, rmtree
 from typing import Iterable, Iterator, Mapping, NamedTuple, Sequence, Union
 from urllib.parse import urljoin
 
 import pandas as pd
 import requests
+from requests.structures import CaseInsensitiveDict
 
 NOW = pd.Timestamp.now()
 _debug: bool = False
-byteUnit: Mapping[str, int] = {
-    u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGTP"), (1024 ** s for s in range(1, 6))) for u in us
-}
+
+byteSize: Mapping[str, int] = CaseInsensitiveDict(
+    {k: v for kk, v in zip(((f"{c}B", f"{c}iB") for c in "KMGTP"), (1024 ** i for i in range(1, 6))) for k in kk}
+)
 
 
 class Removable(NamedTuple):
@@ -153,8 +155,8 @@ class qBittorrent:
         except TypeError:
             self.seedDir = None
 
-        self.upSpeedThresh, self.dlSpeedThresh = (i * byteUnit["MiB"] for i in speedThresh)
-        self.spaceQuota = spaceQuota * byteUnit["GiB"]
+        self.upSpeedThresh, self.dlSpeedThresh = (i * byteSize["MiB"] for i in speedThresh)
+        self.spaceQuota = spaceQuota * byteSize["GiB"]
         self.stateCounter = Counter(i["state"] for i in self.torrents.values())
 
         self.datafile = datafile
@@ -219,7 +221,6 @@ class qBittorrent:
 
         try:
             self.speedFrame = self.speedFrame.truncate(before=(NOW - pd.Timedelta("1H")), copy=False).append(speedRow)
-
         except (TypeError, AttributeError):
             self.speedFrame = speedRow
 
@@ -230,7 +231,6 @@ class qBittorrent:
                 self.torrentFrame.dropna(how="all", inplace=True)
 
             self.torrentFrame = self.torrentFrame.append(torrentRow)
-
         except (TypeError, AttributeError):
             self.torrentFrame = torrentRow
 
@@ -400,13 +400,13 @@ class MTeam:
 
     domain = "https://pt.m-team.cc"
 
-    def __init__(self, *, feeds: Iterable[str], account: Iterable[str], minPeer: Iterable[float], qb: qBittorrent):
+    def __init__(self, *, feeds: Sequence[str], account: Sequence[str], minPeer: Sequence[float], qb: qBittorrent):
         """The minimum peer requirement subjects to: Peer >= A * Size(GiB) + B
         Where (A, B) is defined in config file and passed via "minPeer"."""
 
         self.feeds = feeds
         self.account = account
-        self.minPeer = minPeer[0] / byteUnit["GiB"], minPeer[1]
+        self.minPeer = minPeer[0] / byteSize["GiB"], minPeer[1]
         self.qb = qb
         self.session = qb.session
         self.history = qb.mteamHistory
@@ -442,12 +442,12 @@ class MTeam:
         from bs4 import BeautifulSoup
 
         A, B = self.minPeer
-        re_download = re_compile(r"\bdownload\.php\?")
-        re_details = re_compile(r"\bdetails\.php\?")
-        re_nondigit = re_compile(r"[^0-9]+")
-        re_size = re_compile(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)")
-        re_tid = re_compile(r"\bid=(?P<tid>[0-9]+)")
-        re_timelimit = re_compile(r"^\s*限時：")
+        re_download = re.compile(r"\bdownload\.php\?")
+        re_details = re.compile(r"\bdetails\.php\?")
+        re_nondigit = re.compile(r"[^0-9]+")
+        re_size = re.compile(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)", flags=re.I)
+        re_tid = re.compile(r"\bid=(?P<tid>[0-9]+)")
+        re_timelimit = re.compile(r"^\s*限時：")
         transTable = str.maketrans({"日": "D", "時": "H", "分": "T"})
         visited = set()
         cols = {}
@@ -463,7 +463,7 @@ class MTeam:
                 print("Unable to locate table, css selector broken?", feed)
                 continue
             except AttributeError:
-                print("Connection failed:", feed)
+                print("Fetching failed:", feed)
                 continue
             except Exception as e:
                 print("Parsing error:", e)
@@ -485,7 +485,7 @@ class MTeam:
                 try:
                     peer = int(re_nondigit.sub("", tr[colDown].get_text()))
                     size = re_size.search(tr[colSize].get_text())
-                    size = int(float(size["num"]) * byteUnit[size["unit"]])
+                    size = int(float(size["num"]) * byteSize[size["unit"]])
                     if peer < A * size + B:
                         continue
 
@@ -510,7 +510,7 @@ class MTeam:
                     yield Torrent(tid=tid, size=size, peer=peer, title=title, link=link, expire=expire)
 
     def download(self, downloadList: Sequence[Torrent]):
-        """Download torrents from mteam, then pass the contents to qBittorrent class."""
+        """Download torrents from mteam, then pass to qBittorrent uploader."""
 
         if not downloadList:
             return
