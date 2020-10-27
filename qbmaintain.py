@@ -657,8 +657,8 @@ def report(qb: qBittorrent, solver: MPSolver):
             humansize(qb.breaks),
         )
     )
-    for v in solver.removeCand:
-        print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
+    for t in solver.removeCand:
+        print(f"[{humansize(t.size):>11}|{t.peer:3d} peers] {t.title}")
 
     print(sepSlim)
     if isinstance(status, dict):
@@ -682,8 +682,8 @@ def report(qb: qBittorrent, solver: MPSolver):
                 sum(i.peer for i in final),
             )
         )
-        for v in final:
-            print(f"[{humansize(v.size):>11}|{v.peer:3d} peers] {v.title}")
+        for t in final:
+            print(f"[{humansize(t.size):>11}|{t.peer:3d} peers] {t.title}")
 
 
 def init_config(configfile: Path):
