@@ -1,11 +1,11 @@
 import pickle
+import sys
 from collections import Counter, namedtuple
 from configparser import ConfigParser
 from heapq import heappop, heappush
 from pathlib import Path
 from re import compile as re_compile
 from shutil import disk_usage, rmtree
-from sys import argv
 from urllib.parse import urljoin
 
 import pandas as pd
@@ -14,31 +14,43 @@ import requests
 Removable = namedtuple("Removable", ("hash", "size", "peer", "title"))
 Torrent = namedtuple("Torrent", ("tid", "size", "peer", "title", "link", "expire"))
 
-_debug = False
+_debug: bool = False
 now = pd.Timestamp.now()
 byteUnit = {u: s for us, s in zip(((f"{u}B", f"{u}iB") for u in "KMGTP"), (1024 ** s for s in range(1, 6))) for u in us}
 
 
-class AlarmClock(list):
-    """Heap que to create and manage alarms.
+class AlarmClock:
+    """Create and manage alarms.
 
-    Internally, alarms are stord as tuples: (time, type)
+    Internally, alarms are stord in a heap, as tuples: (time, type)
     """
 
     SKIP = 0
     FETCH = 1
 
+    def __init__(self) -> None:
+        self._data = []
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def nearest(self):
+        if self._data:
+            alarm = self._data[0]
+            return f'{alarm[0].left.strftime("%F %T")} (type: {alarm[1]})'
+
     def get_alarm(self):
         """Get the most recent alarm, if any.
 
-        SKIP will be returned during its duration, others only once.
+        Returns SKIP during its duration, others only once.
         """
-        while self and now >= self[0][0].left:
-            if now in self[0][0]:
-                if self[0][1] == self.SKIP:
+        data = self._data
+        while data and now >= data[0][0].left:
+            if now in data[0][0]:
+                if data[0][1] == self.SKIP:
                     return self.SKIP
-                return heappop(self)[1]
-            heappop(self)
+                return heappop(data)[1]
+            heappop(data)
 
     def add_alarm(self, start: pd.Timestamp, span: str, _type: int):
         """Add a new alarm to the que.
@@ -54,14 +66,58 @@ class AlarmClock(list):
             if start > stop:
                 start, stop = stop, start
 
-        heappush(self, (pd.Interval(start, stop, closed="both"), _type))
+        heappush(self._data, (pd.Interval(start, stop, closed="both"), _type))
 
     def clear_current_alarm(self):
-        while self and now in self[0][0]:
-            heappop(self)
+        while self._data and now in self._data[0][0]:
+            heappop(self._data)
+
+
+class Logger:
+    """Record and write logs in reversed order."""
+
+    def __init__(self) -> None:
+        self._log = []
+
+    def record(self, action: str, size: int, name: str):
+        self._log.append(
+            "{:20}{:12}{:14}{}\n".format(
+                pd.Timestamp.now().strftime("%D %T"),
+                action,
+                humansize(size),
+                name,
+            ),
+        )
+
+    def write(self, logfile: Path):
+        if not self._log or _debug:
+            return
+
+        header = "{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", "-" * 80)
+        content = reversed(self._log)
+
+        try:
+            with open(logfile, mode="r+", encoding="utf-8") as f:
+                for _ in range(2):
+                    f.readline()
+                backup = f.read()
+                f.seek(0)
+                f.write(header)
+                f.writelines(content)
+                f.write(backup)
+                f.truncate()
+        except FileNotFoundError:
+            with open(logfile, mode="w", encoding="utf-8") as f:
+                f.write(header)
+                f.writelines(content)
+
+
+logger = Logger()
 
 
 class qBittorrent:
+    """The main manager class to manage qBittorrent and data persistence."""
+
     def __init__(self, *, host: str, seedDir: str, speedThresh: tuple, spaceQuota: float, datafile: Path):
 
         self.api_base = urljoin(host, "api/v2/")
@@ -100,9 +156,10 @@ class qBittorrent:
                 self.speedFrame, self.torrentFrame, self.alarmClock, self.mteamHistory, self.session = pickle.load(f)
 
         except Exception as e:
-            if self.datafile.exists() and not _debug:
+            if self.datafile.exists():
                 print(f"Reading '{self.datafile}' failed: {e}")
-                self.datafile.rename(f"{self.datafile}_{now.strftime('%y%m%d_%H%M%S')}")
+                if not _debug:
+                    self.datafile.rename(f"{self.datafile}_{now.strftime('%y%m%d_%H%M%S')}")
 
             self.speedFrame = self.torrentFrame = None
             self.alarmClock = AlarmClock()
@@ -117,12 +174,12 @@ class qBittorrent:
                 pickle.dump((self.speedFrame, self.torrentFrame, self.alarmClock, self.mteamHistory, self.session), f)
         except (OSError, pickle.PickleError) as e:
             msg = f"Writing data to disk failed: {e}"
-            log.record("Error", None, msg)
+            logger.record("Error", None, msg)
             print(msg)
 
     def init_session(self):
         """Initialize a new requests session."""
-        self.session = requests.session()
+        self.session = requests.Session()
         self.session.headers.update(
             {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) Gecko/20100101 Firefox/80.0"}
         )
@@ -182,7 +239,7 @@ class qBittorrent:
                 except OSError as e:
                     print("Deletion Failed:", e)
                 else:
-                    log.record("Cleanup", None, path.name)
+                    logger.record("Cleanup", None, path.name)
 
     def need_action(self) -> bool:
         """True if speed is low, space is low, or an alarm is near."""
@@ -246,14 +303,14 @@ class qBittorrent:
                 yield Removable(hash=k, size=v["size"], peer=v["num_incomplete"], title=v["name"])
 
     def remove_torrents(self, removeList: tuple):
-        if not removeList:
+        if not removeList or _debug:
             return
         self._request(
             "torrents/delete",
             params={"hashes": "|".join(i.hash for i in removeList), "deleteFiles": True},
         )
         for v in removeList:
-            log.record("Remove", v.size, v.title)
+            logger.record("Remove", v.size, v.title)
 
     def add_torrent(self, downloadList: tuple, content: dict):
         """Upload torrents and clear recent alarms.
@@ -262,13 +319,14 @@ class qBittorrent:
         When new downloads were made, alarms on current time will be cleared.
         """
         try:
-            self._request("torrents/add", method="POST", files=content)
+            if not _debug:
+                self._request("torrents/add", method="POST", files=content)
         except requests.RequestException as e:
-            log.record("Error", None, e)
+            logger.record("Error", None, e)
             return False
 
         for t in downloadList:
-            log.record("Download", t.size, t.title)
+            logger.record("Download", t.size, t.title)
             try:
                 expire = now + pd.Timedelta(t.expire)
             except ValueError:
@@ -480,33 +538,6 @@ class MPSolver:
             self.status = solver.StatusName(status)
 
 
-class Log(list):
-    def record(self, action, size, name):
-        self.append("{:20}{:12}{:14}{}\n".format(pd.Timestamp.now().strftime("%D %T"), action, humansize(size), name))
-
-    def write(self, logfile: Path):
-        if not self or _debug:
-            return
-
-        header = "{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", "-" * 80)
-        content = reversed(self)
-
-        try:
-            with open(logfile, mode="r+", encoding="utf-8") as f:
-                for _ in range(2):
-                    f.readline()
-                backup = f.read()
-                f.seek(0)
-                f.write(header)
-                f.writelines(content)
-                f.write(backup)
-                f.truncate()
-        except FileNotFoundError:
-            with open(logfile, mode="w", encoding="utf-8") as f:
-                f.write(header)
-                f.writelines(content)
-
-
 def humansize(size: int):
     """Convert bytes to human readable sizes."""
     try:
@@ -535,7 +566,7 @@ def report(qb: qBittorrent, solver: MPSolver):
     print(
         "Alarm clock: {}. Nearest: {}.".format(
             len(qb.alarmClock),
-            qb.alarmClock[0][0].left.strftime("%F %T") if qb.alarmClock else "NaT",
+            qb.alarmClock.nearest(),
         )
     )
     print(
@@ -590,7 +621,9 @@ def report(qb: qBittorrent, solver: MPSolver):
 
 def init_config(configfile: Path):
     """Create config file with default values."""
+
     config = ConfigParser()
+
     config["DEFAULT"] = {
         "host": "http://localhost",
         "seed_dir": "",
@@ -612,6 +645,8 @@ def init_config(configfile: Path):
     with configfile.open("w", encoding="utf-8") as f:
         config.write(f)
 
+    print("Please edit config.ini before running this script again.")
+
 
 def main():
     global _debug
@@ -624,11 +659,10 @@ def main():
     config = ConfigParser()
     if not config.read(configfile, encoding="utf-8"):
         init_config(configfile)
-        print("Please edit config.ini before running this script again.")
         return
 
     basic = config["DEFAULT"]
-    for arg in argv[1:]:
+    for arg in sys.argv[1:]:
         if arg == "-d":
             _debug = True
         elif arg == "-r":
@@ -661,17 +695,13 @@ def main():
             qb=qb,
         )
         report(qb, solver)
-
-        if not _debug:
-            qb.remove_torrents(solver.removeList)
-            mteam.download(solver.downloadList)
+        qb.remove_torrents(solver.removeList)
+        mteam.download(solver.downloadList)
 
     qb.resume_paused()
     qb.dump_data()
-    log.write(logfile)
+    logger.write(logfile)
 
-
-log = Log()
 
 if __name__ == "__main__":
     main()
