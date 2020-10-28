@@ -27,6 +27,7 @@ class Removable(NamedTuple):
     size: int
     peer: int
     title: str
+    state: str
 
 
 class Torrent(NamedTuple):
@@ -164,9 +165,9 @@ class qBittorrent:
 
         self.upSpeedThresh, self.dlSpeedThresh = (i * byteSize["MiB"] for i in speedThresh)
         self.spaceQuota = spaceQuota * byteSize["GiB"]
-        self.stateCounter = Counter(i["state"] for i in self.torrents.values())
+        self.stateCount = Counter(i["state"] for i in self.torrents.values())
 
-        self.datafile = datafile
+        self.datafile = datafile if isinstance(datafile, Path) else Path(datafile)
         self._load_data()
         self._record()
 
@@ -307,7 +308,7 @@ class qBittorrent:
         return (
             0 <= speeds["upload"] < self.upSpeedThresh
             and 0 <= speeds["download"] < self.dlSpeedThresh
-            and "queuedDL" not in self.stateCounter
+            and "queuedDL" not in self.stateCount
             and not self.state["use_alt_speed_limits"]
             and not 0 < self.state["up_rate_limit"] < self.upSpeedThresh
         )
@@ -339,16 +340,17 @@ class qBittorrent:
             print("Jenkspy failed:", e)
             self.breaks = speeds.mean()
 
-        oneDayAgo = pd.Timestamp.now(tz="UTC").timestamp() - 86400
+        yesterday = pd.Timestamp.now(tz="UTC").timestamp() - 86400
 
         for k in speeds.loc[speeds <= self.breaks].index:
             v = self.torrents[k]
-            if v["added_on"] < oneDayAgo:
+            if v["added_on"] < yesterday:
                 yield Removable(
                     hash=k,
                     size=v["size"],
                     peer=v["num_incomplete"],
                     title=v["name"],
+                    state=v["state"],
                 )
 
     def remove_torrents(self, removeList: Sequence[Removable]):
@@ -396,7 +398,7 @@ class qBittorrent:
 
         paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
 
-        if not paused.isdisjoint(self.stateCounter):
+        if not paused.isdisjoint(self.stateCount):
             print("Resume torrents.")
             if not _debug:
                 self._request("torrents/resume", params={"hashes": "all"})
@@ -538,39 +540,33 @@ class MPSolver:
     """Using Google OR-Tools to find the optimal choices of downloads and removals.
     The goal is to maximize obtained peers under several constraints.
 
-    Constraints:
-        1: downloadSize <= freeSpace + removedSize
-            --> downloadSize - removedSize <= freeSpace
+    ### Constraints:
+        1:  download_size - removed_size <= free_space
+            Because of: download_size <= free_space + removed_size
             When freeSpace + removedSize < 0, this become impossible to satisfy.
             So the algorithm should delete all remove candidates to free up space.
-        2: total downloads <= qb max_active_downloads - current_downloading
-            so we don't add torrents to the queue.
 
-    Objective:
-        Maximize: downloadPeer - 3/4 * removedPeer
+        2:  downloads - removes(downloading) <= max_active_downloads - downloading
+            so we do not add torrent if the queue is full.
+
+    ### Objective:
+        Maximize: download_peer - 3/4 removed_peer
     """
 
     def __init__(self, *, removeCand: Iterable[Removable], downloadCand: Iterable[Torrent], qb: qBittorrent):
 
         self.downloadList = self.removeList = ()
-        self.freeSpace = qb.freeSpace
         self.downloadCand = tuple(downloadCand)
-        if not (self.downloadCand or self.freeSpace < 0 or _debug):
+        if not (self.downloadCand or qb.freeSpace < 0 or _debug):
             return
 
         self.removeCand = tuple(removeCand)
         self.removeCandSize = sum(i.size for i in self.removeCand)
-        if self.freeSpace < -self.removeCandSize:
+        if qb.freeSpace < -self.removeCandSize:
             self.removeList = self.removeCand
             return
 
-        maxDownloads: int = qb.get_preference("max_active_downloads")
-        if maxDownloads > 0:
-            maxDownloads -= qb.stateCounter["downloading"]
-            if maxDownloads <= 0:
-                return
-        self.maxDownloads = maxDownloads
-
+        self.qb = qb
         self._solve()
 
     def _solve(self):
@@ -578,22 +574,28 @@ class MPSolver:
         from ortools.sat.python import cp_model
 
         model = cp_model.CpModel()
+        scalprod = cp_model.LinearExpr.ScalProd
         downloadCand = self.downloadCand
         removeCand = self.removeCand
+        qb = self.qb
 
-        sizeCoef = [t.size for t in downloadCand]
-        peerCoef = [4 * t.peer for t in downloadCand]
-        pool = [model.NewBoolVar(f"DL_{i}") for i in range(len(downloadCand))]
+        # download_size - removed_size <= free_space
+        coef = [t.size for t in downloadCand]
+        coef.extend(-t.size for t in removeCand)
+        pool = [model.NewBoolVar(f"{i}") for i in range(len(coef))]
+        model.Add(scalprod(pool, coef) <= qb.freeSpace)
 
-        if self.maxDownloads > 0:
-            model.Add(cp_model.LinearExpr.Sum(pool) <= self.maxDownloads)
+        # downloads - removes(downloading) <= max_active_downloads - downloading
+        maxDownloads: int = qb.get_preference("max_active_downloads")
+        if maxDownloads > 0:
+            coef = [1] * len(downloadCand)
+            coef.extend(-(t.state == "downloading") for t in removeCand)
+            model.Add(scalprod(pool, coef) <= maxDownloads - qb.stateCount["downloading"])
 
-        sizeCoef.extend(-t.size for t in removeCand)
-        peerCoef.extend(-3 * t.peer for t in removeCand)
-        pool.extend(model.NewBoolVar(f"RM_{i}") for i in range(len(removeCand)))
-
-        model.Add(cp_model.LinearExpr.ScalProd(pool, sizeCoef) <= self.freeSpace)
-        model.Maximize(cp_model.LinearExpr.ScalProd(pool, peerCoef))
+        # Maximize: download_peer - 3/4 removed_peer
+        coef = [4 * t.peer for t in downloadCand]
+        coef.extend(-3 * t.peer for t in removeCand)
+        model.Maximize(scalprod(pool, coef))
 
         solver = cp_model.CpSolver()
         status = solver.Solve(model)
@@ -647,10 +649,9 @@ def report(qb: qBittorrent, solver: MPSolver):
         )
     )
     print(
-        "Download candidates: {}. Total: {}. Limit: {}.".format(
+        "Download candidates: {}. Total: {}.".format(
             len(solver.downloadCand),
             humansize(sum(i.size for i in solver.downloadCand)),
-            solver.maxDownloads,
         )
     )
     print(
