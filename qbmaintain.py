@@ -6,7 +6,7 @@ from heapq import heappop, heappush
 from pathlib import Path
 from re import compile as re_compile
 from shutil import disk_usage, rmtree
-from typing import Iterable, Iterator, Mapping, NamedTuple, Sequence, Union
+from typing import Iterable, Iterator, Mapping, NamedTuple, Sequence, Union, Tuple
 from urllib.parse import urljoin
 
 import pandas as pd
@@ -55,10 +55,11 @@ class AlarmClock:
     def __len__(self) -> int:
         return len(self._data)
 
-    def nearest(self):
-        if self._data:
-            alarm = self._data[0]
-            return f'{alarm[0].left.strftime("%F %T")} [#{alarm[1]}]'
+    def __str__(self) -> str:
+        return "Alarm: {}. Nearest: {}.".format(
+            len(self._data),
+            f'{self._data[0][0].left.strftime("%F %T")} [#{self._data[0][1]}]' if self._data else "None",
+        )
 
     def get_alarm(self) -> Union[int, None]:
         """Get the most recent alarm, if any.
@@ -97,8 +98,13 @@ class AlarmClock:
 class Logger:
     """Record and write logs in reversed order."""
 
+    _header = "{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", "-" * 80)
+
     def __init__(self) -> None:
         self._log = []
+
+    def __str__(self) -> str:
+        return self._header + "".join(reversed(self._log))
 
     def record(self, action: str, size: int, name: str):
         self._log.append(
@@ -114,23 +120,18 @@ class Logger:
         if not self._log or _debug:
             return
 
-        header = "{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", "-" * 80)
-        content = reversed(self._log)
-
         try:
             with open(logfile, mode="r+", encoding="utf-8") as f:
                 for _ in range(2):
                     f.readline()
                 backup = f.read()
                 f.seek(0)
-                f.write(header)
-                f.writelines(content)
+                f.write(self.__str__())
                 f.write(backup)
                 f.truncate()
         except FileNotFoundError:
             with open(logfile, mode="w", encoding="utf-8") as f:
-                f.write(header)
-                f.writelines(content)
+                f.write(self.__str__())
 
 
 logger = Logger()
@@ -139,7 +140,7 @@ logger = Logger()
 class qBittorrent:
     """The manager class to communicate with qBittorrent and manange data persistence."""
 
-    def __init__(self, *, host: str, seedDir: str, speedThresh: Sequence[float], spaceQuota: float, datafile: Path):
+    def __init__(self, *, host: str, seedDir: str, speedThresh: Tuple[float, float], spaceQuota: float, datafile: Path):
 
         self.api_base = urljoin(host, "api/v2/")
         maindata = self._request("sync/maindata").json()
@@ -399,7 +400,9 @@ class MTeam:
 
     domain = "https://pt.m-team.cc"
 
-    def __init__(self, *, feeds: Sequence[str], account: Sequence[str], minPeer: Sequence[float], qb: qBittorrent):
+    def __init__(
+        self, *, feeds: Sequence[str], account: Tuple[str, str], minPeer: Tuple[float, float], qb: qBittorrent
+    ):
         """The minimum peer requirement subjects to: Peer >= A * Size(GiB) + B
         Where (A, B) is defined in config file and passed via "minPeer"."""
 
@@ -629,13 +632,7 @@ def report(qb: qBittorrent, solver: MPSolver):
     finalFreeSpace = qb.freeSpace + removeSize - downloadSize
 
     print(sepSlim)
-    print(
-        "Alarm: {}. Nearest: {}. Current: [{}].".format(
-            len(qb.alarmClock),
-            qb.alarmClock.nearest(),
-            qb.thisAlarm,
-        )
-    )
+    print(qb.alarmClock, f"Current: [{qb.thisAlarm}].")
     print(
         "Disk free space: {}. Max avail space: {}.".format(
             humansize(qb.freeSpace),
