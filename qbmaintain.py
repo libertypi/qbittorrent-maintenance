@@ -6,7 +6,7 @@ from heapq import heappop, heappush
 from pathlib import Path
 from re import compile as re_compile
 from shutil import disk_usage, rmtree
-from typing import Iterable, Iterator, Mapping, NamedTuple, Sequence, Union, Tuple
+from typing import Iterable, Iterator, Mapping, NamedTuple, Sequence, Tuple, Union
 from urllib.parse import urljoin
 
 import pandas as pd
