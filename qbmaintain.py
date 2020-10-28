@@ -561,13 +561,13 @@ class MPSolver:
         self._solve()
 
     def _solve(self):
-        """The goal is to maximize obtained peers under these constraints:
+        """Maximize obtained peers under:
 
         ### Constraints:
         -   `download_size` - `removed_size` <= `free_space`
 
-            -   infeasible when `free_space` < -`removed_size`. Remove all to
-                freeup space.
+            -   infeasible when `free_space` < -`removed_size`. Remove all
+                removables to freeup space.
 
         -   `downloads` - `removes[downloading]` <= `max_active_downloads` - `total_downloading`
 
@@ -601,15 +601,14 @@ class MPSolver:
             # intermediate boolean variable
             has_new = model.NewBoolVar("has_new")
 
-            # implement has_new == (Sum(down) > 0)
-            split = len(downloadCand)
-            down = pool[:split]
-            model.Add(Sum(down) > 0).OnlyEnforceIf(has_new)
-            model.Add(Sum(down) == 0).OnlyEnforceIf(has_new.Not())
+            # implement has_new == (Sum(downloads) > 0)
+            d = len(downloadCand)
+            model.Add(Sum(pool[i] for i in range(d)) > 0).OnlyEnforceIf(has_new)
+            model.Add(Sum(pool[i] for i in range(d)) == 0).OnlyEnforceIf(has_new.Not())
 
             # downloads - removes(downloading) <= max_slot
             # enforce only if has_new is true
-            coef = [1] * split
+            coef = [1] * d
             coef.extend(-(t.state == "downloading") for t in removeCand)
             model.Add(ScalProd(pool, coef) <= self.maxSlots).OnlyEnforceIf(has_new)
 
