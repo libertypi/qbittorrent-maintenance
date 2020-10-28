@@ -98,13 +98,20 @@ class AlarmClock:
 class Logger:
     """Record and write logs in reversed order."""
 
-    _header = "{:20}{:12}{:14}{}\n{}\n".format("Date", "Action", "Size", "Name", "-" * 80)
-
     def __init__(self) -> None:
         self._log = []
 
     def __str__(self) -> str:
-        return self._header + "".join(reversed(self._log))
+        return (
+            "{:20}{:12}{:14}{}\n{}\n".format(
+                "Date",
+                "Action",
+                "Size",
+                "Name",
+                "-" * 80,
+            )
+            + "".join(reversed(self._log))
+        )
 
     def record(self, action: str, size: int, name: str):
         self._log.append(
