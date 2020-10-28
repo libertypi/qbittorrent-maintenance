@@ -345,7 +345,13 @@ class qBittorrent:
         for k in speeds.loc[speeds <= self.breaks].index:
             v = self.torrents[k]
             if v["added_on"] < yesterday:
-                yield Removable(hash=k, size=v["size"], peer=v["num_incomplete"], title=v["name"], state=v["state"])
+                yield Removable(
+                    hash=k,
+                    size=v["size"],
+                    peer=v["num_incomplete"],
+                    title=v["name"],
+                    state=v["state"],
+                )
 
     def remove_torrents(self, removeList: Sequence[Removable]):
         """Remove torrents and files."""
@@ -565,7 +571,7 @@ class MPSolver:
 
         -   `downloads` - `removes[downloading]` <= `max_active_downloads` - `total_downloading`
 
-            -   never exceed qBittorrent max_active limit, if set.
+            -   never exceed qBittorrent max_active_downloads limit, if exists.
             -   to avoid problems when max_slot < 0 (i.e. torrents force started
                 by user), only implemented when downloads > 0. If we were to
                 download new torrents, we ensure max_slot resume to 0.
@@ -590,7 +596,6 @@ class MPSolver:
         pool = [model.NewBoolVar(f"{i}") for i in range(len(coef))]
         model.Add(ScalProd(pool, coef) <= self.freeSpace)
 
-        # downloads - removes(downloading) <= max_slot
         if self.maxSlots is not None:
 
             # intermediate boolean variable
@@ -602,6 +607,7 @@ class MPSolver:
             model.Add(Sum(down) > 0).OnlyEnforceIf(has_new)
             model.Add(Sum(down) == 0).OnlyEnforceIf(has_new.Not())
 
+            # downloads - removes(downloading) <= max_slot
             # enforce only if has_new is true
             coef = [1] * split
             coef.extend(-(t.state == "downloading") for t in removeCand)
