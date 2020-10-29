@@ -591,7 +591,7 @@ class MPSolver:
         # download_size - removed_size <= free_space
         coef = [t.size for t in downloadCand]
         coef.extend(-t.size for t in removeCand)
-        pool = [model.NewBoolVar(f"{i}") for i in range(len(coef))]
+        pool = tuple(model.NewBoolVar(f"{i}") for i in range(len(coef)))
         model.Add(ScalProd(pool, coef) <= qb.freeSpace)
 
         # downloads - removes(downloading) <= max_active_downloads - total_downloading
