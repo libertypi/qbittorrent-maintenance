@@ -538,55 +538,53 @@ class MTeam:
 
 
 class MPSolver:
-    """Using Google OR-Tools to find the optimal choices of downloads and removals."""
+    """Using Google OR-Tools to find the optimal combination of downloads and removals.
+
+    Maximize obtained peers under constraints.
+
+    ### Constraints:
+    -   `download_size` - `removed_size` <= `free_space`
+
+        -   infeasible when `free_space` < -`removed_size`. Remove all
+            removables to freeup space.
+
+    -   `downloads` - `removes[downloading]` <= `max_active_downloads` - `total_downloading`
+
+        -   never exceed qBittorrent max_active_downloads limit, if exists.
+        -   to avoid problems when max_active_downloads < total_downloading
+            (i.e. torrents force started by user), only implemented when
+            downloads > 0. If we were to download new torrents, we ensure
+            overall downloading bellow limit. Otherwise, leave it be.
+
+    ### Objective:
+    -   Maximize: `download_peer` - `3/4` * `removed_peer`
+    """
 
     def __init__(self, *, removeCand: Iterable[Removable], downloadCand: Iterable[Torrent], qb: qBittorrent):
 
         self.downloadList = self.removeList = ()
         self.downloadCand = tuple(downloadCand)
-        self.freeSpace = qb.freeSpace
-        if not (self.downloadCand or self.freeSpace < 0 or _debug):
+        if not (self.downloadCand or qb.freeSpace < 0 or _debug):
             return
 
         self.removeCand = tuple(removeCand)
         self.removeCandSize = sum(i.size for i in self.removeCand)
-        if self.freeSpace <= -self.removeCandSize:
+        if qb.freeSpace <= -self.removeCandSize:
             self.removeList = self.removeCand
             return
 
-        # max_slot = max_active_downloads - total_downloading
-        mx: int = qb.get_preference("max_active_downloads")
-        self.maxSlots = mx - qb.stateCount["downloading"] if mx > 0 else None
-
+        self.qb = qb
         self._solve()
 
     def _solve(self):
-        """Maximize obtained peers under:
-
-        ### Constraints:
-        -   `download_size` - `removed_size` <= `free_space`
-
-            -   infeasible when `free_space` < -`removed_size`. Remove all
-                removables to freeup space.
-
-        -   `downloads` - `removes[downloading]` <= `max_active_downloads` - `total_downloading`
-
-            -   never exceed qBittorrent max_active_downloads limit, if exists.
-            -   to avoid problems when max_slot < 0 (i.e. torrents force started
-                by user), only implemented when downloads > 0. If we were to
-                download new torrents, we ensure max_slot resume to 0.
-                Otherwise, leave it be.
-
-        ### Objective:
-        -   Maximize: `download_peer` - `3/4` * `removed_peer`
-        """
 
         from ortools.sat.python import cp_model
 
-        model = cp_model.CpModel()
         downloadCand = self.downloadCand
         removeCand = self.removeCand
+        qb = self.qb
 
+        model = cp_model.CpModel()
         Sum = cp_model.LinearExpr.Sum
         ScalProd = cp_model.LinearExpr.ScalProd
 
@@ -594,9 +592,11 @@ class MPSolver:
         coef = [t.size for t in downloadCand]
         coef.extend(-t.size for t in removeCand)
         pool = [model.NewBoolVar(f"{i}") for i in range(len(coef))]
-        model.Add(ScalProd(pool, coef) <= self.freeSpace)
+        model.Add(ScalProd(pool, coef) <= qb.freeSpace)
 
-        if self.maxSlots is not None:
+        # downloads - removes(downloading) <= max_active_downloads - total_downloading
+        maxActive: int = qb.get_preference("max_active_downloads")
+        if maxActive > 0:
 
             # intermediate boolean variable
             has_new = model.NewBoolVar("has_new")
@@ -606,11 +606,12 @@ class MPSolver:
             model.Add(Sum(pool[i] for i in range(d)) > 0).OnlyEnforceIf(has_new)
             model.Add(Sum(pool[i] for i in range(d)) == 0).OnlyEnforceIf(has_new.Not())
 
-            # downloads - removes(downloading) <= max_slot
             # enforce only if has_new is true
             coef = [1] * d
             coef.extend(-(t.state == "downloading") for t in removeCand)
-            model.Add(ScalProd(pool, coef) <= self.maxSlots).OnlyEnforceIf(has_new)
+            model.Add(
+                ScalProd(pool, coef) <= maxActive - qb.stateCount["downloading"],
+            ).OnlyEnforceIf(has_new)
 
         # Maximize: download_peer - 3/4 removed_peer
         coef = [4 * t.peer for t in downloadCand]
