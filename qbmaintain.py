@@ -142,9 +142,6 @@ class Logger:
                 f.write(self.__str__())
 
 
-logger = Logger()
-
-
 class qBittorrent:
     """The manager class to communicate with qBittorrent and manange data persistence."""
 
@@ -291,15 +288,22 @@ class qBittorrent:
                     logger.record("Cleanup", None, path.name)
 
     def get_free_space(self) -> int:
+        """Calculate free space on seed_dir.
+
+        free_space = free_space_on_disk - space_quota - amount_left_to_download
+        """
         realSpace = self.state["free_space_on_disk"]
         try:
             realSpace = max(realSpace, disk_usage(self.seedDir).free)
         except TypeError:
             pass
-        self.freeSpace = int(realSpace - self.spaceQuota - sum(i["amount_left"] for i in self.torrents.values()))
+        self.freeSpace = int(
+            realSpace - self.spaceQuota - sum(i["amount_left"] for i in self.torrents.values()),
+        )
         return self.freeSpace
 
-    def get_qb_speed(self) -> pd.Series:
+    def get_speed(self) -> pd.Series:
+        """Calculate qBittorrent last hour ul/dl speeds."""
         hi = self.speedFrame.iloc[-1]
         lo = self.speedFrame.iloc[0]
         return (hi - lo) // (hi.name - lo.name).total_seconds()
@@ -315,7 +319,7 @@ class qBittorrent:
         if self.thisAlarm is not None:
             return self.thisAlarm == AlarmClock.FETCH
 
-        speeds = self.get_qb_speed()
+        speeds = self.get_speed()
         print("Last hour avg speed: UL: {upload}/s, DL: {download}/s.".format_map(speeds.apply(humansize)))
 
         return (
@@ -332,7 +336,7 @@ class qBittorrent:
         from jenkspy import jenks_breaks
 
         df = self.torrentFrame = self.torrentFrame.truncate(
-            before=(NOW - pd.Timedelta("24H")),
+            before=NOW - pd.Timedelta("24H"),
             copy=False,
         )
 
@@ -386,6 +390,9 @@ class qBittorrent:
         cleared.
         """
 
+        if not 0 < len(downloadList) == len(content):
+            raise ValueError("Params length unmatched or empty.")
+
         if not _debug:
             try:
                 self._request("torrents/add", method="POST", files=content)
@@ -410,7 +417,6 @@ class qBittorrent:
         """If any torrent is paused, for any reason, resume."""
 
         paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
-
         if not paused.isdisjoint(self.stateCount):
             print("Resume torrents.")
             if not _debug:
@@ -420,7 +426,7 @@ class qBittorrent:
 class MTeam:
     """A cumbersome MTeam downloader.
 
-    -   The minimum peer requirement subjects to:
+    -   Minimum peer requirement subjects to:
 
         Peer >= A * Size(GiB) + B
 
@@ -651,7 +657,7 @@ class MPSolver:
             self.status = solver.StatusName(status)
 
     def report(self):
-        """Output report information to stdout."""
+        """Print report to stdout."""
 
         try:
             status = self.status
@@ -811,6 +817,8 @@ def main():
     qb.dump_data()
     logger.write(root.with_name("logfile.log"))
 
+
+logger = Logger()
 
 if __name__ == "__main__":
     main()
