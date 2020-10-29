@@ -6,7 +6,7 @@ from heapq import heappop, heappush
 from pathlib import Path
 from re import compile as re_compile
 from shutil import disk_usage, rmtree
-from typing import Iterable, Iterator, Mapping, NamedTuple, Sequence, Tuple, Union
+from typing import Iterable, Iterator, Mapping, NamedTuple, Sequence, Tuple
 from urllib.parse import urljoin
 
 import pandas as pd
@@ -62,7 +62,7 @@ class AlarmClock:
             f'{self._data[0][0].left.strftime("%F %T")} [#{self._data[0][1]}]' if self._data else "None",
         )
 
-    def get_alarm(self) -> Union[int, None]:
+    def get_alarm(self):
         """Get the most recent alarm, if any.
 
         Returns SKIP during its duration, others only once.
@@ -383,15 +383,14 @@ class qBittorrent:
             logger.record("Remove", v.size, v.title)
 
     def add_torrent(self, downloadList: Sequence[Torrent], content: Mapping[str, bytes]):
-        """Upload torrents and clear recent alarms.
+        """Upload torrents and clear current alarms.
 
         When a timelimited free torrent being added, an alarm will be set on its
-        expiry date. When new downloads were made, current alarms will be
-        cleared.
+        expiry date. This method clear all current alarms.
         """
 
         if not 0 < len(downloadList) == len(content):
-            raise ValueError("Params length unmatched or empty.")
+            raise ValueError("Param lengths unmatch or empty.")
 
         if not _debug:
             try:
@@ -436,7 +435,12 @@ class MTeam:
     domain = "https://pt.m-team.cc"
 
     def __init__(
-        self, *, feeds: Sequence[str], account: Tuple[str, str], minPeer: Tuple[float, float], qb: qBittorrent
+        self,
+        *,
+        feeds: Iterable[str],
+        account: Tuple[str, str],
+        minPeer: Tuple[float, float],
+        qb: qBittorrent,
     ):
 
         self.feeds = feeds
@@ -487,7 +491,7 @@ class MTeam:
         visited = set()
         cols = {}
 
-        print(f"Connecting to M-Team... Feeds: {len(self.feeds)}.")
+        print(f"Connecting to M-Team... Pages: {len(self.feeds)}.")
 
         for feed in self.feeds:
             try:
@@ -662,7 +666,7 @@ class MPSolver:
         try:
             status = self.status
         except AttributeError:
-            print("Solver did not start: unnecessary conditions.")
+            print("Solver did not start: unnecessary condition.")
             return
 
         qb = self.qb
@@ -674,7 +678,7 @@ class MPSolver:
         print(sepSlim)
         print(qb.alarmClock, f"Current: [{getattr(qb, 'thisAlarm', None)}].")
         print(
-            "Disk free space: {}. Max avail space: {}.".format(
+            "Disk free space: {}. Max available: {}.".format(
                 humansize(qb.freeSpace),
                 humansize(qb.freeSpace + self.removeCandSize),
             )
@@ -698,11 +702,11 @@ class MPSolver:
 
         print(sepSlim)
         if isinstance(status, dict):
-            print("{status} solution found in {walltime:.5f} seconds, objective value: {value}.".format_map(status))
+            print("Solution: {status}. Walltime: {walltime:.5f}s. Objective value: {value}.".format_map(status))
         else:
             print("CP-SAT solver cannot find an optimal solution. Status:", status)
 
-        print(f"Free space left after operation: {humansize(qb.freeSpace)} => {humansize(finalFreeSpace)}.")
+        print(f"Free space after operation: {humansize(qb.freeSpace)} => {humansize(finalFreeSpace)}.")
 
         for prefix in "remove", "download":
             final = getattr(self, prefix + "List")
