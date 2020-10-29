@@ -621,7 +621,7 @@ class MPSolver:
         solver = cp_model.CpSolver()
         status = solver.Solve(model)
 
-        if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             self.status = {
                 "status": solver.StatusName(status),
                 "walltime": solver.WallTime(),
