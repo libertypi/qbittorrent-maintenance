@@ -143,7 +143,7 @@ class Logger:
 
 
 class qBittorrent:
-    """The manager class to communicate with qBittorrent and manange data persistence."""
+    """The manager class for communicating with qBittorrent and data persistence."""
 
     def __init__(self, *, host: str, seedDir: str, speedThresh: Tuple[float, float], spaceQuota: float, datafile: Path):
 
