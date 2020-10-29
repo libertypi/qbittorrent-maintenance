@@ -223,12 +223,19 @@ class qBittorrent:
         """Record qBittorrent traffic info to pandas DataFrame."""
 
         speedRow = pd.DataFrame(
-            {"upload": self.state["alltime_ul"], "download": self.state["alltime_dl"]}, index=(NOW,)
+            {"upload": self.state["alltime_ul"], "download": self.state["alltime_dl"]},
+            index=(NOW,),
         )
-        torrentRow = pd.DataFrame({k: v["uploaded"] for k, v in self.torrents.items()}, index=(NOW,))
+        torrentRow = pd.DataFrame(
+            {k: v["uploaded"] for k, v in self.torrents.items()},
+            index=(NOW,),
+        )
 
         try:
-            self.speedFrame = self.speedFrame.truncate(before=(NOW - pd.Timedelta("1H")), copy=False).append(speedRow)
+            self.speedFrame = self.speedFrame.truncate(
+                before=NOW - pd.Timedelta("1H"),
+                copy=False,
+            ).append(speedRow)
         except (TypeError, AttributeError):
             self.speedFrame = speedRow
 
@@ -283,16 +290,24 @@ class qBittorrent:
                 else:
                     logger.record("Cleanup", None, path.name)
 
-    def need_action(self) -> bool:
-        """True if speed is low, space is low, or an alarm is close."""
-
+    def get_free_space(self) -> int:
         realSpace = self.state["free_space_on_disk"]
         try:
             realSpace = max(realSpace, disk_usage(self.seedDir).free)
         except TypeError:
             pass
         self.freeSpace = int(realSpace - self.spaceQuota - sum(i["amount_left"] for i in self.torrents.values()))
-        if self.freeSpace < 0:
+        return self.freeSpace
+
+    def get_qb_speed(self) -> pd.Series:
+        hi = self.speedFrame.iloc[-1]
+        lo = self.speedFrame.iloc[0]
+        return (hi - lo) // (hi.name - lo.name).total_seconds()
+
+    def need_action(self) -> bool:
+        """True if speed is low, space is low, or an alarm is close."""
+
+        if self.get_free_space() < 0:
             return True
 
         if not hasattr(self, "thisAlarm"):
@@ -300,9 +315,7 @@ class qBittorrent:
         if self.thisAlarm is not None:
             return self.thisAlarm == AlarmClock.FETCH
 
-        hi = self.speedFrame.iloc[-1]
-        lo = self.speedFrame.iloc[0]
-        speeds = (hi - lo) // (hi.name - lo.name).total_seconds()
+        speeds = self.get_qb_speed()
         print("Last hour avg speed: UL: {upload}/s, DL: {download}/s.".format_map(speeds.apply(humansize)))
 
         return (
@@ -325,7 +338,6 @@ class qBittorrent:
 
         hi = df.iloc[-1]
         lo = df.apply(pd.Series.first_valid_index)
-
         speeds: pd.Series
         speeds = (hi.values - df.lookup(lo, lo.index)) // (hi.name - lo).dt.total_seconds()
         speeds.dropna(inplace=True)
@@ -406,15 +418,20 @@ class qBittorrent:
 
 
 class MTeam:
-    """A cumbersome MTeam downloader."""
+    """A cumbersome MTeam downloader.
+
+    -   The minimum peer requirement subjects to:
+
+        Peer >= A * Size(GiB) + B
+
+        Where (A, B) is defined in config file and passed via `minPeer`.
+    """
 
     domain = "https://pt.m-team.cc"
 
     def __init__(
         self, *, feeds: Sequence[str], account: Tuple[str, str], minPeer: Tuple[float, float], qb: qBittorrent
     ):
-        """The minimum peer requirement subjects to: Peer >= A * Size(GiB) + B
-        Where (A, B) is defined in config file and passed via "minPeer"."""
 
         self.feeds = feeds
         self.account = account
@@ -633,6 +650,71 @@ class MPSolver:
         else:
             self.status = solver.StatusName(status)
 
+    def report(self):
+        """Output report information to stdout."""
+
+        try:
+            status = self.status
+        except AttributeError:
+            print("Solver did not start: unnecessary conditions.")
+            return
+
+        qb = self.qb
+        sepSlim = "-" * 50
+        removeSize = sum(i.size for i in self.removeList)
+        downloadSize = sum(i.size for i in self.downloadList)
+        finalFreeSpace = qb.freeSpace + removeSize - downloadSize
+
+        print(sepSlim)
+        print(qb.alarmClock, f"Current: [{getattr(qb, 'thisAlarm', None)}].")
+        print(
+            "Disk free space: {}. Max avail space: {}.".format(
+                humansize(qb.freeSpace),
+                humansize(qb.freeSpace + self.removeCandSize),
+            )
+        )
+        print(
+            "Download candidates: {}. Total: {}.".format(
+                len(self.downloadCand),
+                humansize(sum(i.size for i in self.downloadCand)),
+            )
+        )
+        print(
+            "Remove candidates: {}/{}. Total: {}. Break: {}/s.".format(
+                len(self.removeCand),
+                len(qb.torrents),
+                humansize(self.removeCandSize),
+                humansize(qb.breaks),
+            )
+        )
+        for t in self.removeCand:
+            print(f"[{humansize(t.size):>11}|{t.peer:3d} peers] {t.title}")
+
+        print(sepSlim)
+        if isinstance(status, dict):
+            print("{status} solution found in {walltime:.5f} seconds, objective value: {value}.".format_map(status))
+        else:
+            print("CP-SAT solver cannot find an optimal solution. Status:", status)
+
+        print(f"Free space left after operation: {humansize(qb.freeSpace)} => {humansize(finalFreeSpace)}.")
+
+        for prefix in "remove", "download":
+            final = getattr(self, prefix + "List")
+            cand = getattr(self, prefix + "Cand")
+            size = locals()[prefix + "Size"]
+            print(sepSlim)
+            print(
+                "{}: {}/{}. Total: {}, {} peers.".format(
+                    prefix.capitalize(),
+                    len(final),
+                    len(cand),
+                    humansize(size),
+                    sum(i.peer for i in final),
+                )
+            )
+            for t in final:
+                print(f"[{humansize(t.size):>11}|{t.peer:3d} peers] {t.title}")
+
 
 def humansize(size: int) -> str:
     """Convert bytes to human readable sizes."""
@@ -647,135 +729,68 @@ def humansize(size: int) -> str:
     return "NaN"
 
 
-def report(qb: qBittorrent, solver: MPSolver):
-    """Output report information to stdout."""
+def read_config(configfile: Path):
+    """Read or create config file."""
 
-    try:
-        status = solver.status
-    except AttributeError:
-        print("Solver did not start: unnecessary conditions.")
-        return
+    global _debug
+    parser = ConfigParser()
 
-    sepSlim = "-" * 50
-    removeSize = sum(i.size for i in solver.removeList)
-    downloadSize = sum(i.size for i in solver.downloadList)
-    finalFreeSpace = qb.freeSpace + removeSize - downloadSize
+    if parser.read(configfile, encoding="utf-8"):
 
-    print(sepSlim)
-    print(qb.alarmClock, f"Current: [{qb.thisAlarm}].")
-    print(
-        "Disk free space: {}. Max avail space: {}.".format(
-            humansize(qb.freeSpace),
-            humansize(qb.freeSpace + solver.removeCandSize),
-        )
-    )
-    print(
-        "Download candidates: {}. Total: {}.".format(
-            len(solver.downloadCand),
-            humansize(sum(i.size for i in solver.downloadCand)),
-        )
-    )
-    print(
-        "Remove candidates: {}/{}. Total: {}. Break: {}/s.".format(
-            len(solver.removeCand),
-            len(qb.torrents),
-            humansize(solver.removeCandSize),
-            humansize(qb.breaks),
-        )
-    )
-    for t in solver.removeCand:
-        print(f"[{humansize(t.size):>11}|{t.peer:3d} peers] {t.title}")
+        basic = parser["DEFAULT"]
 
-    print(sepSlim)
-    if isinstance(status, dict):
-        print("{status} solution found in {walltime:.5f} seconds, objective value: {value}.".format_map(status))
-    else:
-        print("CP-SAT solver cannot find an optimal solution. Status:", status)
+        for arg in sys.argv[1:]:
+            if arg == "-d":
+                _debug = True
+            elif arg == "-r":
+                _debug = True
+                basic = parser["OVERRIDE"]
+            else:
+                raise ValueError(f"Unrecognized argument: '{arg}'")
 
-    print(f"Free space left after operation: {humansize(qb.freeSpace)} => {humansize(finalFreeSpace)}.")
+        return basic, parser["MTEAM"]
 
-    for prefix in "remove", "download":
-        final = getattr(solver, prefix + "List")
-        cand = getattr(solver, prefix + "Cand")
-        size = locals()[prefix + "Size"]
-        print(sepSlim)
-        print(
-            "{}: {}/{}. Total: {}, {} peers.".format(
-                prefix.capitalize(),
-                len(final),
-                len(cand),
-                humansize(size),
-                sum(i.peer for i in final),
-            )
-        )
-        for t in final:
-            print(f"[{humansize(t.size):>11}|{t.peer:3d} peers] {t.title}")
-
-
-def init_config(configfile: Path):
-    """Create config file with default values."""
-
-    config = ConfigParser()
-
-    config["DEFAULT"] = {
+    parser["DEFAULT"] = {
         "host": "http://localhost",
         "seed_dir": "",
         "space_quota": "50",
         "upspeed_thresh": "2.6",
         "dlspeed_thresh": "6",
     }
-    config["MTEAM"] = {
+    parser["MTEAM"] = {
         "account": "",
         "password": "",
         "peer_slope": "0.3",
         "peer_intercept": "30",
         "feeds": "\nexample1.php\nexample2.php",
     }
-    config["OVERRIDE"] = {
+    parser["OVERRIDE"] = {
         "host": "http://localhost",
         "seed_dir": "",
     }
-    with configfile.open("w", encoding="utf-8") as f:
-        config.write(f)
+    with open(configfile, "w", encoding="utf-8") as f:
+        parser.write(f)
 
     print("Please edit config.ini before running this script again.")
+    sys.exit()
 
 
 def main():
-    global _debug
 
-    script_dir = Path(__file__).parent
-    datafile = script_dir / "data"
-    logfile = script_dir / "logfile.log"
-    configfile = script_dir / "config.ini"
-
-    config = ConfigParser()
-    if not config.read(configfile, encoding="utf-8"):
-        init_config(configfile)
-        return
-
-    basic = config["DEFAULT"]
-    for arg in sys.argv[1:]:
-        if arg == "-d":
-            _debug = True
-        elif arg == "-r":
-            _debug = True
-            basic = config["OVERRIDE"]
-        else:
-            raise ValueError(f"Unrecognized argument: '{arg}'")
+    root = Path(__file__)
+    basic, mt = read_config(root.with_name("config.ini"))
 
     qb = qBittorrent(
         host=basic["host"],
         seedDir=basic["seed_dir"] or None,
         speedThresh=(basic.getfloat("upspeed_thresh"), basic.getfloat("dlspeed_thresh")),
         spaceQuota=basic.getfloat("space_quota"),
-        datafile=datafile,
+        datafile=root.with_name("data"),
     )
     qb.clean_seedDir()
 
     if qb.need_action() or _debug:
 
-        mt = config["MTEAM"]
         mteam = MTeam(
             feeds=mt["feeds"].split(),
             account=(mt["account"], mt["password"]),
@@ -787,13 +802,14 @@ def main():
             downloadCand=mteam.fetch(),
             qb=qb,
         )
-        report(qb, solver)
+        solver.report()
+
         qb.remove_torrents(solver.removeList)
         mteam.download(solver.downloadList)
 
     qb.resume_paused()
     qb.dump_data()
-    logger.write(logfile)
+    logger.write(root.with_name("logfile.log"))
 
 
 if __name__ == "__main__":
