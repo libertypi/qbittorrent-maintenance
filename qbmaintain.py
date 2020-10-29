@@ -663,9 +663,7 @@ class MPSolver:
     def report(self):
         """Print report to stdout."""
 
-        try:
-            status = self.status
-        except AttributeError:
+        if not hasattr(self, "status"):
             print("Solver did not start: unnecessary condition.")
             return
 
@@ -701,10 +699,10 @@ class MPSolver:
             print(f"[{humansize(t.size):>11}|{t.peer:3d} peers] {t.title}")
 
         print(sepSlim)
-        if isinstance(status, dict):
-            print("Solution: {status}. Walltime: {walltime:.5f}s. Objective value: {value}.".format_map(status))
+        if isinstance(self.status, dict):
+            print("Solution: {status}. Walltime: {walltime:.5f}s. Objective value: {value}.".format_map(self.status))
         else:
-            print("CP-SAT solver cannot find an optimal solution. Status:", status)
+            print("CP-SAT solver cannot find an optimal solution. Status:", self.status)
 
         print(f"Free space after operation: {humansize(qb.freeSpace)} => {humansize(finalFreeSpace)}.")
 
