@@ -212,14 +212,10 @@ class qBittorrent:
         # select history info of current torrents
         try:
             df = self.history
-            df = df.loc[df.index.isin(torrentRow.columns), "expire"]
+            self.expiry = df.loc[df.index.isin(torrentRow.columns), "expire"]
         except (TypeError, AttributeError, KeyError):
             self.history = pd.DataFrame(columns=("id", "add", "expire"))
-            df = self.history["expire"]
-
-        # current torrents states
-        self.expired = df[df <= NOW].index
-        self.limitedFree = df[df > NOW].index
+            self.expiry = self.history["expire"]
 
     def clean_seedDir(self):
         """Clean files in seed dir which does not belong to qb download list."""
@@ -250,18 +246,19 @@ class qBittorrent:
     def throttle_expires(self):
         """Set download limit on expired free torrents."""
 
-        if self.expired.empty:
+        expired = self.expiry[self.expiry <= NOW].index
+        if expired.empty:
             return
 
-        ex = self.expired.intersection(k for k, v in self.torrent.items() if v["dl_limit"] <= 0)
-        if not (ex.empty or _debug):
+        hashes = expired.intersection(k for k, v in self.torrent.items() if v["dl_limit"] <= 0)
+        if not (hashes.empty or _debug):
             self._request(
                 "torrents/setDownloadLimit",
                 method="POST",
-                data={"hashes": "|".join(ex), "limit": 1},
+                data={"hashes": "|".join(hashes), "limit": 1},
             )
 
-        self.history.loc[self.expired, "expire"] = pd.NaT
+        self.history.loc[expired, "expire"] = pd.NaT
 
     def get_free_space(self) -> int:
         """Calculate free space on seed_dir.
@@ -343,6 +340,7 @@ class qBittorrent:
 
         # exclude those added less than 1 day
         yesterday = pd.Timestamp.now(tz="UTC").timestamp() - 86400
+        limitFree = self.expiry[self.expiry > NOW].index
 
         for k in speeds[speeds <= self.breaks].index:
             v = self.torrent[k]
@@ -353,7 +351,7 @@ class qBittorrent:
                     peer=v["num_incomplete"],
                     title=v["name"],
                     state=v["state"],
-                    limited=(k in self.limitedFree),
+                    limited=(k in limitFree),
                 )
 
     def remove_torrents(self, removeList: Sequence[Removable]):
