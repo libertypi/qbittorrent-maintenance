@@ -183,7 +183,7 @@ class qBittorrent:
         appRow = pd.DataFrame({"upload": self.state["alltime_ul"], "download": self.state["alltime_dl"]}, index=(NOW,))
         torrentRow = pd.DataFrame({k: v["uploaded"] for k, v in self.torrent.items()}, index=(NOW,))
 
-        # truncate application dataframe to last hour and append new row
+        # truncate application dataframe and append new row
         try:
             self.appData = self.appData.truncate(
                 before=NOW - pd.Timedelta(1, unit="hours"),
@@ -199,7 +199,11 @@ class qBittorrent:
             if not delete.empty:
                 df.drop(columns=delete, inplace=True, errors="ignore")
                 df.dropna(how="all", inplace=True)
-            self.torrentData = df.append(torrentRow)
+
+            self.torrentData = df.truncate(
+                before=NOW - pd.Timedelta(1, unit="days"),
+                copy=False,
+            ).append(torrentRow)
         except (TypeError, AttributeError):
             self.torrentData = torrentRow
 
@@ -309,13 +313,8 @@ class qBittorrent:
     def get_remove_cands(self) -> Iterator[Removable]:
         """Discover the slowest torrents using jenks natural breaks."""
 
-        # truncate torrents data to the last 24 hours
-        df = self.torrentData = self.torrentData.truncate(
-            before=NOW - pd.Timedelta(24, unit="hours"),
-            copy=False,
-        )
-
         # calculate avg speed for each torrent
+        df = self.torrentData
         hi = df.iloc[-1]
         lo = df.apply(pd.Series.first_valid_index)
         speeds: pd.Series = (hi.values - df.lookup(lo, lo.index)) // (hi.name - lo).dt.total_seconds()
