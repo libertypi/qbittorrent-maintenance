@@ -180,14 +180,8 @@ class qBittorrent:
         """Record qBittorrent traffic info to pandas DataFrame."""
 
         # new rows for application and torrents
-        appRow = pd.DataFrame(
-            {"upload": self.state["alltime_ul"], "download": self.state["alltime_dl"]},
-            index=(NOW,),
-        )
-        torrentRow = pd.DataFrame(
-            {k: v["uploaded"] for k, v in self.torrent.items()},
-            index=(NOW,),
-        )
+        appRow = pd.DataFrame({"upload": self.state["alltime_ul"], "download": self.state["alltime_dl"]}, index=(NOW,))
+        torrentRow = pd.DataFrame({k: v["uploaded"] for k, v in self.torrent.items()}, index=(NOW,))
 
         # truncate application dataframe to last hour and append new row
         try:
@@ -209,7 +203,7 @@ class qBittorrent:
         except (TypeError, AttributeError):
             self.torrentData = torrentRow
 
-        # select history info of current torrents
+        # select expiration record of current torrents
         try:
             df = self.history
             self.expiry = df.loc[df.index.isin(torrentRow.columns), "expire"]
@@ -286,8 +280,7 @@ class qBittorrent:
 
         True if:
         -   space is bellow threshold
-        -   some torrents has recently expired
-        -   traffic speed is bellow threshold and alt_speed is not enabled
+        -   speed is bellow threshold and alt_speed is not enabled
 
         False if:
         -   during silence period (explicitly set after a successful download)
