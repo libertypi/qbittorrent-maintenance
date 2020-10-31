@@ -238,7 +238,7 @@ class qBittorrent:
                     logger.record("Cleanup", None, path.name)
 
     def throttle_expires(self):
-        """Set download limit on expired free torrents."""
+        """Throttle download speeds on expired limited-time free torrents."""
 
         expired = self.expiry[self.expiry <= NOW].index
         if expired.empty:
@@ -391,6 +391,8 @@ class qBittorrent:
                 t.size = torrent.total_size
             except TorrentoolException as e:
                 print("Torrentool error:", e)
+                if not t.hash:
+                    t.hash = t.id
 
             logger.record("Download", t.size, t.title)
 
