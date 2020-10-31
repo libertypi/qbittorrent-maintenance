@@ -218,9 +218,8 @@ class qBittorrent:
             df = self.history["expire"]
 
         # current torrents states
+        self.expired = df[df <= NOW].index
         self.limitedFree = df[df > NOW].index
-        self.expired = exp = df[df <= NOW].index
-        self.has_recent_expires: bool = not exp.empty and (df[exp] >= NOW - pd.Timedelta(3, unit="hours")).any()
 
     def clean_seedDir(self):
         """Clean files in seed dir which does not belong to qb download list."""
@@ -253,13 +252,16 @@ class qBittorrent:
 
         if self.expired.empty:
             return
-        exp = self.expired.intersection(k for k, v in self.torrent.items() if v["dl_limit"] <= 0)
-        if not (exp.empty or _debug):
+
+        ex = self.expired.intersection(k for k, v in self.torrent.items() if v["dl_limit"] <= 0)
+        if not (ex.empty or _debug):
             self._request(
                 "torrents/setDownloadLimit",
                 method="POST",
-                data={"hashes": "|".join(exp), "limit": 1},
+                data={"hashes": "|".join(ex), "limit": 1},
             )
+
+        self.history.loc[self.expired, "expire"] = pd.NaT
 
     def get_free_space(self) -> int:
         """Calculate free space on seed_dir.
@@ -287,7 +289,7 @@ class qBittorrent:
 
         True if:
         -   space is bellow threshold
-        -   a timelimited free torrent has recently expired
+        -   some torrents has recently expired
         -   traffic speed is bellow threshold and alt_speed is not enabled
 
         False if:
@@ -303,9 +305,6 @@ class qBittorrent:
             if NOW <= self.silence:
                 return False
             self.silence = None
-
-        if self.has_recent_expires:
-            return True
 
         speeds = self.get_speed()
         print("Last hour avg speed: UL: {upload}/s, DL: {download}/s.".format_map(speeds.apply(humansize)))
@@ -408,12 +407,6 @@ class qBittorrent:
         df = self.history
         df = df[df.index.isin(self.torrentData.columns) | (df["add"] > NOW - pd.Timedelta(30, unit="days"))]
 
-        # set n hours of silence
-        self.silence = NOW + pd.Timedelta(len(downloadList), unit="hours")
-
-        # clear expiry records before silence ending
-        df.loc[df["expire"] <= self.silence, "expire"] = pd.NaT
-
         # save new info to dataframe
         self.history = df.append(
             pd.DataFrame(
@@ -422,6 +415,9 @@ class qBittorrent:
                 columns=("id", "add", "expire"),
             )
         )
+
+        # set n hours of silence
+        self.silence = NOW + pd.Timedelta(len(downloadList), unit="hours")
 
     def get_preference(self, key: str):
         """Query qBittorrent preferences by key."""
