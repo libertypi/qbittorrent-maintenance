@@ -46,6 +46,7 @@ class Torrent:
     link: str
     expire: str
     title: str
+    hash: str = None
 
 
 class Logger:
@@ -127,13 +128,13 @@ class qBittorrent:
 
         self.appData: pd.DataFrame
         self.torrentData: pd.DataFrame
-        self.torrentInfo: pd.DataFrame
+        self.history: pd.DataFrame
         self.silence: pd.Timestamp
         self.session: requests.Session
 
         try:
             with self.datafile.open(mode="rb") as f:
-                self.appData, self.torrentData, self.torrentInfo, self.silence, self.session = pickle.load(f)
+                self.appData, self.torrentData, self.history, self.silence, self.session = pickle.load(f)
 
         except Exception as e:
             if self.datafile.exists():
@@ -141,7 +142,7 @@ class qBittorrent:
                 if not _debug:
                     self.datafile.rename(f"{self.datafile}_{NOW.strftime('%y%m%d_%H%M%S')}")
 
-            self.appData = self.torrentData = self.torrentInfo = self.silence = None
+            self.appData = self.torrentData = self.history = self.silence = None
             self.init_session()
 
     def dump_data(self):
@@ -152,7 +153,7 @@ class qBittorrent:
 
         try:
             with self.datafile.open("wb") as f:
-                pickle.dump((self.appData, self.torrentData, self.torrentInfo, self.silence, self.session), f)
+                pickle.dump((self.appData, self.torrentData, self.history, self.silence, self.session), f)
 
         except (OSError, pickle.PickleError) as e:
             msg = f"Writing data to disk failed: {e}"
@@ -200,25 +201,26 @@ class qBittorrent:
         # cleanup deleted torrents data and append new row
         try:
             df = self.torrentData
-            diff = df.columns.difference(torrentRow.columns)
-            if not diff.empty:
-                df.drop(columns=diff, inplace=True, errors="ignore")
+            delete = df.columns.difference(torrentRow.columns)
+            if not delete.empty:
+                df.drop(columns=delete, inplace=True, errors="ignore")
                 df.dropna(how="all", inplace=True)
             self.torrentData = df.append(torrentRow)
         except (TypeError, AttributeError):
             self.torrentData = torrentRow
 
-        # cleanup deleted torrents from torrentInfo
+        # select history info of current torrents
         try:
-            df = self.torrentInfo
-            diff = df.index.difference(torrentRow.columns)
-            if not diff.empty:
-                df.drop(index=diff, inplace=True, errors="ignore")
-        except (TypeError, AttributeError):
-            df = self.torrentInfo = pd.DataFrame(columns=("id", "expire"))
+            df = self.history
+            df = df.loc[df.index.intersection(torrentRow.columns), "expire"]
+        except (TypeError, AttributeError, KeyError):
+            self.history = pd.DataFrame(columns=("id", "add", "expire"))
+            df = self.history["expire"]
 
-        # get expired torrent hashes
-        self.expired = df[df["expire"] <= NOW].index
+        # current torrents states
+        self.limitedFree = df[df > NOW].index
+        self.expired = exp = df[df <= NOW].index
+        self.has_recent_expires: bool = not exp.empty and (df[exp] >= NOW - pd.Timedelta("3H")).any()
 
     def clean_seedDir(self):
         """Clean files in seed dir which does not belong to qb download list."""
@@ -260,11 +262,6 @@ class qBittorrent:
                 data={"hashes": "|".join(hashes), "limit": 1},
             )
 
-    def has_recent_expires(self, thresh: str = "3H") -> bool:
-        """Whether any torrent has expired within the <thresh> period."""
-        idx = self.expired
-        return not idx.empty and (self.torrentInfo.loc[idx, "expire"] >= NOW - pd.Timedelta(thresh)).any()
-
     def get_free_space(self) -> int:
         """Calculate free space on seed_dir.
 
@@ -297,7 +294,7 @@ class qBittorrent:
         False if:
         -   during silence period (explicitly set after a successful download)
         -   has torrents in download queue
-        -   space and speeds all satisfy thresholds
+        -   any other situations
         """
 
         if self.get_free_space() < 0:
@@ -308,7 +305,7 @@ class qBittorrent:
                 return False
             self.silence = None
 
-        if self.has_recent_expires():
+        if self.has_recent_expires:
             return True
 
         speeds = self.get_speed()
@@ -347,13 +344,10 @@ class qBittorrent:
             print("Jenkspy failed:", e)
             self.breaks = speeds.mean()
 
-        # list those torrents in timelimited free state
-        # and exclude those added less than 1 day
-        df = self.torrentInfo
-        limited = df[df["expire"] > NOW].index
+        # exclude those added less than 1 day
         yesterday = pd.Timestamp.now(tz="UTC").timestamp() - 86400
 
-        for k in speeds.loc[speeds <= self.breaks].index:
+        for k in speeds[speeds <= self.breaks].index:
             v = self.torrent[k]
             if v["added_on"] < yesterday:
                 yield Removable(
@@ -362,7 +356,7 @@ class qBittorrent:
                     peer=v["num_incomplete"],
                     title=v["name"],
                     state=v["state"],
-                    limited=(k in limited),
+                    limited=(k in self.limitedFree),
                 )
 
     def remove_torrents(self, removeList: Sequence[Removable]):
@@ -396,37 +390,41 @@ class qBittorrent:
 
         # convert expire strings to timestamp objects
         # dig out torrent hash and name from torrent file
-        data = []
-        index = []
         for t in downloadList:
             try:
-                expire = NOW + pd.Timedelta(t.expire)
+                t.expire = NOW + pd.Timedelta(t.expire)
             except ValueError:
-                expire = pd.NaT
+                t.expire = pd.NaT
 
             try:
                 torrent = TorrentParser.from_string(content[t.id])
                 t.title = torrent.name
-                info_hash = torrent.info_hash
-                if not info_hash:
-                    raise TorrentoolException("Getting hash failed.")
+                t.hash = torrent.info_hash
             except TorrentoolException as e:
                 print("Torrentool error:", e)
-            else:
-                data.append((t.id, expire))
-                index.append(info_hash)
 
             logger.record("Download", t.size, t.title)
+
+        # cleanup outdated history records (30 days older and not in app)
+        df = self.history
+        delete = df[~df.index.isin(self.torrentData.columns) & (df["add"] < NOW - pd.Timedelta("30D"))].index
+        if not delete.empty:
+            df.drop(index=delete, inplace=True, errors="ignore")
 
         # set n hours of silence
         self.silence = NOW + pd.Timedelta(f"{len(downloadList)}H")
 
         # clear expiry records before silence ending
-        df = self.torrentInfo
         df.loc[df["expire"] <= self.silence, "expire"] = pd.NaT
 
         # save new info to dataframe
-        self.torrentInfo = df.append(pd.DataFrame(data, index=index, columns=("id", "expire")))
+        self.history = df.append(
+            pd.DataFrame(
+                ((t.id, NOW, t.expire) for t in downloadList),
+                index=(t.hash for t in downloadList),
+                columns=("id", "add", "expire"),
+            ),
+        )
 
     def get_preference(self, key: str):
         """Query qBittorrent preferences by key."""
@@ -505,7 +503,7 @@ class MTeam:
 
         cols = {}
         A, B = self.minPeer
-        visited = set(self.qb.torrentInfo["id"])
+        visited = set(self.qb.history["id"])
         transTable = str.maketrans({"日": "D", "時": "H", "分": "T"})
 
         re_download = re_compile(r"\bdownload\.php\?")
