@@ -115,7 +115,7 @@ class qBittorrent:
         except TypeError:
             self.seedDir = None
 
-        self.upSpeedThresh, self.dlSpeedThresh = (i * byteSize["MiB"] for i in speedThresh)
+        self.speedThresh = tuple(i * byteSize["MiB"] for i in speedThresh)
         self.spaceQuota = spaceQuota * byteSize["GiB"]
         self.stateCount = Counter(i["state"] for i in self.torrent.values())
 
@@ -192,7 +192,7 @@ class qBittorrent:
         # truncate application dataframe to last hour and append new row
         try:
             self.appData = self.appData.truncate(
-                before=NOW - pd.Timedelta("1H"),
+                before=NOW - pd.Timedelta(1, unit="hours"),
                 copy=False,
             ).append(appRow)
         except (TypeError, AttributeError):
@@ -212,7 +212,7 @@ class qBittorrent:
         # select history info of current torrents
         try:
             df = self.history
-            df = df.loc[df.index.intersection(torrentRow.columns), "expire"]
+            df = df.loc[df.index.isin(torrentRow.columns), "expire"]
         except (TypeError, AttributeError, KeyError):
             self.history = pd.DataFrame(columns=("id", "add", "expire"))
             df = self.history["expire"]
@@ -220,7 +220,7 @@ class qBittorrent:
         # current torrents states
         self.limitedFree = df[df > NOW].index
         self.expired = exp = df[df <= NOW].index
-        self.has_recent_expires: bool = not exp.empty and (df[exp] >= NOW - pd.Timedelta("3H")).any()
+        self.has_recent_expires: bool = not exp.empty and (df[exp] >= NOW - pd.Timedelta(3, unit="hours")).any()
 
     def clean_seedDir(self):
         """Clean files in seed dir which does not belong to qb download list."""
@@ -253,13 +253,12 @@ class qBittorrent:
 
         if self.expired.empty:
             return
-
-        hashes = self.expired.intersection(k for k, v in self.torrent.items() if v["dl_limit"] <= 0)
-        if not (hashes.empty or _debug):
+        exp = self.expired.intersection(k for k, v in self.torrent.items() if v["dl_limit"] <= 0)
+        if not (exp.empty or _debug):
             self._request(
                 "torrents/setDownloadLimit",
                 method="POST",
-                data={"hashes": "|".join(hashes), "limit": 1},
+                data={"hashes": "|".join(exp), "limit": 1},
             )
 
     def get_free_space(self) -> int:
@@ -312,11 +311,10 @@ class qBittorrent:
         print("Last hour avg speed: UL: {upload}/s, DL: {download}/s.".format_map(speeds.apply(humansize)))
 
         return (
-            0 <= speeds["upload"] < self.upSpeedThresh
-            and 0 <= speeds["download"] < self.dlSpeedThresh
+            (speeds < self.speedThresh).all()
             and "queuedDL" not in self.stateCount
             and not self.state["use_alt_speed_limits"]
-            and not 0 < self.state["up_rate_limit"] < self.upSpeedThresh
+            and not 0 < self.state["up_rate_limit"] < self.speedThresh[0]  # upload
         )
 
     def get_remove_cands(self) -> Iterator[Removable]:
@@ -324,7 +322,7 @@ class qBittorrent:
 
         # truncate torrents data to the last 24 hours
         df = self.torrentData = self.torrentData.truncate(
-            before=NOW - pd.Timedelta("24H"),
+            before=NOW - pd.Timedelta(24, unit="hours"),
             copy=False,
         )
 
@@ -398,21 +396,20 @@ class qBittorrent:
 
             try:
                 torrent = TorrentParser.from_string(content[t.id])
-                t.title = torrent.name
                 t.hash = torrent.info_hash
+                t.title = torrent.name
+                t.size = torrent.total_size
             except TorrentoolException as e:
                 print("Torrentool error:", e)
 
             logger.record("Download", t.size, t.title)
 
-        # cleanup outdated history records (30 days older and not in app)
+        # cleanup outdated records (older than 30 days and not in app)
         df = self.history
-        delete = df[~df.index.isin(self.torrentData.columns) & (df["add"] < NOW - pd.Timedelta("30D"))].index
-        if not delete.empty:
-            df.drop(index=delete, inplace=True, errors="ignore")
+        df = df[df.index.isin(self.torrentData.columns) | (df["add"] > NOW - pd.Timedelta(30, unit="days"))]
 
         # set n hours of silence
-        self.silence = NOW + pd.Timedelta(f"{len(downloadList)}H")
+        self.silence = NOW + pd.Timedelta(len(downloadList), unit="hours")
 
         # clear expiry records before silence ending
         df.loc[df["expire"] <= self.silence, "expire"] = pd.NaT
@@ -423,7 +420,7 @@ class qBittorrent:
                 ((t.id, NOW, t.expire) for t in downloadList),
                 index=(t.hash for t in downloadList),
                 columns=("id", "add", "expire"),
-            ),
+            )
         )
 
     def get_preference(self, key: str):
