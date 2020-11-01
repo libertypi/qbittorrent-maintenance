@@ -1,11 +1,11 @@
 import pickle
+import shutil
 import sys
 from collections import Counter
 from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
 from re import compile as re_compile
-from shutil import disk_usage, rmtree
 from typing import Iterable, Iterator, Mapping, Sequence, Tuple
 from urllib.parse import urljoin
 
@@ -58,20 +58,15 @@ class Logger:
         self._log = []
 
     def __str__(self) -> str:
-        return (
-            "{:20}{:12}{:14}{}\n{}\n".format(
-                "Date",
-                "Action",
-                "Size",
-                "Name",
-                "-" * 80,
-            )
-            + "".join(reversed(self._log))
+        return "{:17}    {:8}    {:>11}    {}\n{:->80}\n{}".format(
+            "Date", "Action", "Size", "Name", "", "".join(reversed(self._log))
         )
 
     def record(self, action: str, size: int, name: str):
+        """Record a line of log."""
+
         self._log.append(
-            "{:20}{:12}{:14}{}\n".format(
+            "{:17}    {:8}    {:>11}    {}\n".format(
                 pd.Timestamp.now().strftime("%D %T"),
                 action,
                 humansize(size),
@@ -79,7 +74,12 @@ class Logger:
             ),
         )
 
-    def write(self, logfile: Path):
+    def write(self, logfile: Path, copy_to: str = None):
+        """Insert logs to the beginning of a logfile.
+
+        If `copy_to` is a dir, logfile will be copied to that directory.
+        """
+
         if not self._log or _debug:
             return
 
@@ -95,6 +95,13 @@ class Logger:
         except FileNotFoundError:
             with open(logfile, mode="w", encoding="utf-8") as f:
                 f.write(self.__str__())
+
+        try:
+            shutil.copy(logfile, Path(copy_to))
+        except TypeError:
+            pass
+        except OSError as e:
+            print("Copying log failed:", e)
 
 
 class qBittorrent:
@@ -234,7 +241,7 @@ class qBittorrent:
                     if _debug:
                         pass
                     elif path.is_dir():
-                        rmtree(path)
+                        shutil.rmtree(path)
                     else:
                         path.unlink()
                 except OSError as e:
@@ -263,7 +270,7 @@ class qBittorrent:
         """
         real = self.state["free_space_on_disk"]
         try:
-            real = max(real, disk_usage(self.seedDir).free)
+            real = max(real, shutil.disk_usage(self.seedDir).free)
         except TypeError:
             pass
         self.freeSpace = int(
@@ -366,8 +373,7 @@ class qBittorrent:
         if not content:
             return
 
-        if len(downloadList) != len(content):
-            raise ValueError("Length of params unmatch.")
+        assert len(downloadList) == len(content), "Lengths of params should match."
 
         if not _debug:
             try:
@@ -376,8 +382,8 @@ class qBittorrent:
                 logger.record("Error", None, e)
                 return
 
-        # convert expire strings to timestamp objects
-        # dig out torrent hash and name from torrent file
+        # convert time strings to timestamp objects
+        # read hash and name from torrent file
         for t in downloadList:
             try:
                 t.expire = NOW + pd.Timedelta(t.expire)
@@ -762,6 +768,7 @@ def read_config(configfile: Path):
         "space_quota": "50",
         "upspeed_thresh": "2.6",
         "dlspeed_thresh": "6",
+        "log_backup": "",
     }
     parser["MTEAM"] = {
         "account": "",
@@ -816,7 +823,10 @@ def main():
 
     qb.resume_paused()
     qb.dump_data()
-    logger.write(root.with_name("logfile.log"))
+    logger.write(
+        logfile=root.with_name("logfile.log"),
+        copy_to=basic["log_backup"] or None,
+    )
 
 
 logger = Logger()
