@@ -107,7 +107,7 @@ class Logger:
 class qBittorrent:
     """The manager class for communicating with qBittorrent and data persistence."""
 
-    def __init__(self, *, host: str, seedDir: str, speedThresh: Tuple[float, float], spaceQuota: float, datafile: Path):
+    def __init__(self, *, host: str, seedDir: str, speedThresh: Tuple[float, float], diskQuota: float, datafile: Path):
 
         self.api_base = urljoin(host, "api/v2/")
         maindata = self._request("sync/maindata").json()
@@ -122,9 +122,11 @@ class qBittorrent:
         except TypeError:
             self.seedDir = None
 
-        self.speedThresh = tuple(i * byteSize["MiB"] for i in speedThresh)
-        self.spaceQuota = spaceQuota * byteSize["GiB"]
-        self.stateCount = Counter(i["state"] for i in self.torrent.values())
+        self.speedThresh = tuple(v * byteSize["MiB"] for v in speedThresh)
+
+        values = self.torrent.values()
+        self.diskOffset = sum(v["amount_left"] for v in values) + diskQuota * byteSize["GiB"]
+        self.stateCount = Counter(v["state"] for v in values)
 
         self.datafile = datafile if isinstance(datafile, Path) else Path(datafile)
         self._load_data()
@@ -231,7 +233,7 @@ class qBittorrent:
         except AttributeError:
             return
 
-        names = {i["name"] for i in self.torrent.values()}
+        names = {v["name"] for v in self.torrent.values()}
         for path in iterdir:
             if path.name not in names:
                 if path.suffix == ".!qB" and path.stem in names:
@@ -266,16 +268,14 @@ class qBittorrent:
     def get_free_space(self) -> int:
         """Calculate free space on seed_dir.
 
-        `free_space` = `free_space_on_disk` - `space_quota` - `amount_left_to_download`
+        `free_space` = `free_space_on_disk` - `disk_quota` - `amount_left_to_download`
         """
         real = self.state["free_space_on_disk"]
         try:
             real = max(real, shutil.disk_usage(self.seedDir).free)
         except TypeError:
             pass
-        self.freeSpace = int(
-            real - self.spaceQuota - sum(i["amount_left"] for i in self.torrent.values()),
-        )
+        self.freeSpace = int(real - self.diskOffset)
         return self.freeSpace
 
     def get_speed(self) -> pd.Series:
@@ -362,13 +362,13 @@ class qBittorrent:
 
         self._request(
             "torrents/delete",
-            params={"hashes": "|".join(i.hash for i in removeList), "deleteFiles": True},
+            params={"hashes": "|".join(t.hash for t in removeList), "deleteFiles": True},
         )
-        for v in removeList:
-            logger.record("Remove", v.size, v.title)
+        for t in removeList:
+            logger.record("Remove", t.size, t.title)
 
     def add_torrent(self, downloadList: Sequence[Torrent], content: Mapping[str, bytes]):
-        """Upload torrents to qBittorrents and record torrent information."""
+        """Upload torrents to qBittorrents and record information."""
 
         if not content:
             return
@@ -584,8 +584,8 @@ class MPSolver:
         -   never exceed qBittorrent max_active_downloads limit, if exists.
         -   to avoid problems when max_active_downloads < total_downloading
             (i.e. torrents force started by user), only implemented when
-            downloads > 0. If we were to download new torrents, we ensure
-            overall downloading bellow limit. Otherwise, leave it be.
+            downloads > 0. If we were to add new torrents, we ensure overall
+            downloading bellow limit. Otherwise, leave it be.
 
     ### Objective:
     -   Maximize: `download_peer` - `factor` * `removed_peer`
@@ -601,7 +601,7 @@ class MPSolver:
             return
 
         self.removeCand = tuple(removeCand)
-        self.removeCandSize = sum(i.size for i in self.removeCand)
+        self.removeCandSize = sum(t.size for t in self.removeCand)
         if qb.freeSpace <= -self.removeCandSize:
             self.removeList = self.removeCand
             return
@@ -675,8 +675,8 @@ class MPSolver:
 
         qb = self.qb
         sepSlim = "-" * 50
-        removeSize = sum(i.size for i in self.removeList)
-        downloadSize = sum(i.size for i in self.downloadList)
+        removeSize = sum(t.size for t in self.removeList)
+        downloadSize = sum(t.size for t in self.downloadList)
         finalFreeSpace = qb.freeSpace + removeSize - downloadSize
 
         print(sepSlim)
@@ -689,7 +689,7 @@ class MPSolver:
         print(
             "Download candidates: {}. Total: {}.".format(
                 len(self.downloadCand),
-                humansize(sum(i.size for i in self.downloadCand)),
+                humansize(sum(t.size for t in self.downloadCand)),
             )
         )
         print(
@@ -721,7 +721,7 @@ class MPSolver:
                     len(final),
                     len(cand),
                     humansize(size),
-                    sum(i.peer for i in final),
+                    sum(t.peer for t in final),
                 )
             )
             for t in final:
@@ -765,10 +765,10 @@ def read_config(configfile: Path):
     parser["DEFAULT"] = {
         "host": "http://localhost",
         "seed_dir": "",
-        "space_quota": "50",
+        "disk_quota": "50",
         "upspeed_thresh": "2.6",
         "dlspeed_thresh": "6",
-        "log_backup": "",
+        "log_backup_dir": "",
     }
     parser["MTEAM"] = {
         "account": "",
@@ -797,7 +797,7 @@ def main():
         host=basic["host"],
         seedDir=basic["seed_dir"] or None,
         speedThresh=(basic.getfloat("upspeed_thresh"), basic.getfloat("dlspeed_thresh")),
-        spaceQuota=basic.getfloat("space_quota"),
+        diskQuota=basic.getfloat("disk_quota"),
         datafile=root.with_name("data"),
     )
     qb.clean_seedDir()
@@ -823,9 +823,10 @@ def main():
 
     qb.resume_paused()
     qb.dump_data()
+
     logger.write(
         logfile=root.with_name("logfile.log"),
-        copy_to=basic["log_backup"] or None,
+        copy_to=basic["log_backup_dir"] or None,
     )
 
 
