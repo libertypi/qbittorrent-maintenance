@@ -192,18 +192,19 @@ class qBittorrent:
         except (TypeError, AttributeError):
             self.appData = appRow
 
-        # cleanup deleted torrents data and append new row
+        # cleanup deleted torrents and append new row
         try:
-            df = self.torrentData
+            df = self.torrentData.truncate(
+                before=NOW - pd.Timedelta(1, unit="days"),
+                copy=False,
+            )
+
             delete = df.columns.difference(torrentRow.columns)
             if not delete.empty:
                 df.drop(columns=delete, inplace=True, errors="ignore")
                 df.dropna(how="all", inplace=True)
 
-            self.torrentData = df.truncate(
-                before=NOW - pd.Timedelta(1, unit="days"),
-                copy=False,
-            ).append(torrentRow)
+            self.torrentData = df.append(torrentRow)
         except (TypeError, AttributeError):
             self.torrentData = torrentRow
 
@@ -244,19 +245,16 @@ class qBittorrent:
     def throttle_expires(self):
         """Throttle download speeds on expired limited-time free torrents."""
 
-        expired = self.expiry[self.expiry <= NOW].index
-        if expired.empty:
+        hashes = self.expiry[self.expiry <= NOW].index
+        if hashes.empty or _debug:
             return
 
-        hashes = expired.intersection(k for k, v in self.torrent.items() if v["dl_limit"] <= 0)
-        if not (hashes.empty or _debug):
-            self._request(
-                "torrents/setDownloadLimit",
-                method="POST",
-                data={"hashes": "|".join(hashes), "limit": 1},
-            )
-
-        self.history.loc[expired, "expire"] = pd.NaT
+        self._request(
+            "torrents/setDownloadLimit",
+            method="POST",
+            data={"hashes": "|".join(hashes), "limit": 1},
+        )
+        self.history.loc[hashes, "expire"] = pd.NaT
 
     def get_free_space(self) -> int:
         """Calculate free space on seed_dir.
@@ -304,7 +302,7 @@ class qBittorrent:
         print("Last hour avg speed: UL: {upload}/s, DL: {download}/s.".format_map(speeds.apply(humansize)))
 
         return (
-            (speeds < self.speedThresh).all()
+            (speeds.values < self.speedThresh).all()
             and "queuedDL" not in self.stateCount
             and not self.state["use_alt_speed_limits"]
             and not 0 < self.state["up_rate_limit"] < self.speedThresh[0]  # upload
