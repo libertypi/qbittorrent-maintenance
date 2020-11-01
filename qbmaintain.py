@@ -315,24 +315,27 @@ class qBittorrent:
         df = self.torrentData
         hi = df.iloc[-1]
         lo = df.apply(pd.Series.first_valid_index)
-        speeds: pd.Series = (hi.values - df.lookup(lo, lo.index)) // (hi.name - lo).dt.total_seconds()
-        speeds.dropna(inplace=True)
+        try:
+            speeds: pd.Series = (hi.values - df.lookup(lo, lo.index)) // (hi.name - lo).dt.total_seconds()
+            speeds.dropna(inplace=True)
+        except AttributeError:
+            return
 
         # get 1/3 break point using jenks method
         try:
             c = speeds.size - 1
             if c > 3:
                 c = 3
-            self.breaks = jenks_breaks(speeds, nb_class=c)[1]
+            breaks = jenks_breaks(speeds, nb_class=c)[1]
         except Exception as e:
             print("Jenkspy failed:", e)
-            self.breaks = speeds.mean()
+            breaks = speeds.mean()
 
         # exclude those added less than 1 day
         yesterday = pd.Timestamp.now(tz="UTC").timestamp() - 86400
         limitFree = self.expiry[self.expiry > NOW].index
 
-        for k in speeds[speeds <= self.breaks].index:
+        for k in speeds[speeds <= breaks].index:
             v = self.torrent[k]
             if v["added_on"] < yesterday:
                 yield Removable(
@@ -440,12 +443,7 @@ class MTeam:
     domain = "https://pt.m-team.cc"
 
     def __init__(
-        self,
-        *,
-        feeds: Iterable[str],
-        account: Tuple[str, str],
-        minPeer: Tuple[float, float],
-        qb: qBittorrent,
+        self, *, feeds: Iterable[str], account: Tuple[str, str], minPeer: Tuple[float, float], qb: qBittorrent
     ):
 
         self.feeds = feeds
@@ -465,8 +463,10 @@ class MTeam:
                     return response
                 if retry < 2:
                     self._login()
-            except (requests.ConnectionError, requests.HTTPError, requests.Timeout):
-                pass
+                else:
+                    print("Login failed.")
+            except (requests.ConnectionError, requests.HTTPError, requests.Timeout) as e:
+                print("Connection error:", e)
             except Exception:
                 self.session = self.qb.init_session()
 
@@ -687,11 +687,10 @@ class MPSolver:
             )
         )
         print(
-            "Remove candidates: {}/{}. Total: {}. Break: {}/s.".format(
+            "Remove candidates: {}/{}. Total: {}.".format(
                 len(self.removeCand),
                 len(qb.torrent),
                 humansize(self.removeCandSize),
-                humansize(qb.breaks),
             )
         )
         for t in self.removeCand:
