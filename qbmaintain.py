@@ -109,9 +109,8 @@ class qBittorrent:
 
     def __init__(self, *, host: str, seedDir: str, speedThresh: Tuple[float, float], diskQuota: float, datafile: Path):
 
-        self.api_base = urljoin(host, "api/v2/")
+        self._api_base = urljoin(host, "api/v2/")
         maindata = self._request("sync/maindata").json()
-
         self.state: dict = maindata["server_state"]
         self.torrent: dict = maindata["torrents"]
         if self.state["connection_status"] not in ("connected", "firewalled"):
@@ -122,13 +121,12 @@ class qBittorrent:
         except TypeError:
             self.seedDir = None
 
-        self.speedThresh = tuple(v * byteSize["MiB"] for v in speedThresh)
-
         values = self.torrent.values()
-        self.diskOffset = sum(v["amount_left"] for v in values) + diskQuota * byteSize["GiB"]
         self.stateCount = Counter(v["state"] for v in values)
-
+        self._diskOffset = sum(v["amount_left"] for v in values) + diskQuota * byteSize["GiB"]
+        self._speedThresh = tuple(v * byteSize["MiB"] for v in speedThresh)
         self.datafile = datafile if isinstance(datafile, Path) else Path(datafile)
+
         self._load_data()
         self._record()
 
@@ -181,7 +179,7 @@ class qBittorrent:
     def _request(self, path: str, *, method: str = "GET", **kwargs):
         """Communicate with qBittorrent API."""
 
-        res = requests.request(method, self.api_base + path, timeout=7, **kwargs)
+        res = requests.request(method, self._api_base + path, timeout=7, **kwargs)
         res.raise_for_status()
         return res
 
@@ -266,7 +264,7 @@ class qBittorrent:
         self.history.loc[hashes, "expire"] = pd.NaT
 
     def get_free_space(self) -> int:
-        """Calculate free space on seed_dir.
+        """Return free space on seed_dir.
 
         `free_space` = `free_space_on_disk` - `disk_quota` - `amount_left_to_download`
         """
@@ -275,7 +273,7 @@ class qBittorrent:
             real = max(real, shutil.disk_usage(self.seedDir).free)
         except TypeError:
             pass
-        self.freeSpace = int(real - self.diskOffset)
+        self.freeSpace = int(real - self._diskOffset)
         return self.freeSpace
 
     def get_speed(self) -> pd.Series:
@@ -309,10 +307,10 @@ class qBittorrent:
         print("Last hour avg speed: UL: {upload}/s, DL: {download}/s.".format_map(speeds.apply(humansize)))
 
         return (
-            (speeds.values < self.speedThresh).all()
+            (speeds.values < self._speedThresh).all()
             and "queuedDL" not in self.stateCount
             and not self.state["use_alt_speed_limits"]
-            and not 0 < self.state["up_rate_limit"] < self.speedThresh[0]  # upload
+            and not 0 < self.state["up_rate_limit"] < self._speedThresh[0]  # upload
         )
 
     def get_remove_cands(self) -> Iterator[Removable]:
@@ -673,17 +671,18 @@ class MPSolver:
             print("Solver did not start: unnecessary condition.")
             return
 
-        qb = self.qb
         sepSlim = "-" * 50
+        qb = self.qb
+        freeSpace = qb.freeSpace
         removeSize = sum(t.size for t in self.removeList)
         downloadSize = sum(t.size for t in self.downloadList)
-        finalFreeSpace = qb.freeSpace + removeSize - downloadSize
+        finalFreeSpace = freeSpace + removeSize - downloadSize
 
         print(sepSlim)
         print(
             "Disk free space: {}. Max available: {}.".format(
-                humansize(qb.freeSpace),
-                humansize(qb.freeSpace + self.removeCandSize),
+                humansize(freeSpace),
+                humansize(freeSpace + self.removeCandSize),
             )
         )
         print(
@@ -708,7 +707,7 @@ class MPSolver:
         else:
             print("CP-SAT solver cannot find an optimal solution. Status:", self.status)
 
-        print(f"Free space after operation: {humansize(qb.freeSpace)} => {humansize(finalFreeSpace)}.")
+        print(f"Free space after operation: {humansize(freeSpace)} => {humansize(finalFreeSpace)}.")
 
         for prefix in "remove", "download":
             final = getattr(self, prefix + "List")
