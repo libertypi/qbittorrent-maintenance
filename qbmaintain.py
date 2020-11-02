@@ -26,7 +26,7 @@ byteSize: Mapping[str, int] = {
 
 @dataclass
 class Removable:
-    """Removable torrents in qBittorrent list."""
+    """Removable torrents from qBittorrent list."""
 
     hash: str
     size: int
@@ -304,7 +304,7 @@ class qBittorrent:
         True if:
         -   space is bellow threshold
         -   speed is bellow threshold and alt_speed is not enabled
-        -   some torrents have just expired
+        -   some limited-time free torrents have just expired
 
         False if:
         -   during silence period (explicitly set after a successful download)
@@ -321,14 +321,14 @@ class qBittorrent:
         try:
             if NOW <= self.silence:
                 return False
-        except (TypeError, AttributeError):
+        except TypeError:
             self.silence = NOW
 
         return (
             (speeds.values < self._speedThresh).all()
-            and "queuedDL" not in self.stateCount
             and not self.state["use_alt_speed_limits"]
             and not 0 < self.state["up_rate_limit"] < self._speedThresh[0]  # upload
+            and "queuedDL" not in self.stateCount
             or not self.expired.empty
         )
 
