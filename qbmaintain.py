@@ -26,7 +26,7 @@ byteSize: Mapping[str, int] = {
 
 @dataclass
 class Removable:
-    """Removable torrents from qBittorrent list."""
+    """Removable torrents from qBittorrent."""
 
     hash: str
     size: int
@@ -292,11 +292,14 @@ class qBittorrent:
         self.freeSpace = int(real - self._spaceOffset)
         return self.freeSpace
 
-    def get_speed(self) -> pd.Series:
-        """Calculate qBittorrent last hour ul/dl speeds."""
+    def get_speed(self):
+        """Calculate qBittorrent last hour ul/dl speeds.
+
+        Returns: numpy.array([<ul>, <dl>])
+        """
         hi = self.appData.iloc[-1]
         lo = self.appData.iloc[0]
-        return (hi - lo) / (hi.name - lo.name).total_seconds()
+        return (hi.values - lo.values) / (hi.name - lo.name).total_seconds()
 
     def need_action(self) -> bool:
         """Whether the current situation requires further action (downloads or removals).
@@ -313,7 +316,7 @@ class qBittorrent:
         """
 
         speeds = self.get_speed()
-        print("Last hour avg speed: UL: {upload}/s, DL: {download}/s.".format_map(speeds.apply(humansize)))
+        print("Last hour avg speed: UL: {}/s, DL: {}/s.".format(*map(humansize, speeds)))
 
         if self.get_free_space() < 0:
             return True
@@ -325,7 +328,7 @@ class qBittorrent:
             self.silence = NOW
 
         return (
-            (speeds.values < self._speedThresh).all()
+            (speeds < self._speedThresh).all()
             and not self.state["use_alt_speed_limits"]
             and not 0 < self.state["up_rate_limit"] < self._speedThresh[0]  # upload
             and "queuedDL" not in self.stateCount
@@ -357,6 +360,7 @@ class qBittorrent:
 
         # exclude those added less than 1 day
         yesterday = pd.Timestamp.now(tz="UTC").timestamp() - 86400
+        thresh = self._deadThresh
 
         for key, val in speeds[speeds <= breaks].items():
             t = self.torrent[key]
@@ -367,7 +371,7 @@ class qBittorrent:
                     peer=t["num_incomplete"],
                     title=t["name"],
                     state=t["state"],
-                    weighted=(val > self._deadThresh),
+                    weighted=(val > thresh),
                 )
 
     def remove_torrents(self, removeList: Sequence[Removable]):
@@ -413,8 +417,6 @@ class qBittorrent:
                 t.size = torrent.total_size
             except TorrentoolException as e:
                 print("Torrentool error:", e)
-                if not t.hash:
-                    t.hash = t.id
 
             logger.record("Download", t.size, t.title)
 
@@ -426,7 +428,7 @@ class qBittorrent:
         self.history = df.append(
             pd.DataFrame(
                 ((t.id, NOW, t.expire) for t in downloadList),
-                index=(t.hash for t in downloadList),
+                index=(t.hash or t.id for t in downloadList),
                 columns=("id", "add", "expire"),
             )
         )
@@ -585,7 +587,7 @@ class MPSolver:
     ### Constraints:
     -   `download_size` - `removed_size` <= `free_space`
 
-        -   infeasible when `free_space` < -`removed_size`. Remove all
+        -   infeasible when `free_space` < `-removed_size`. Remove all
             removables to freeup space.
 
     -   `downloads` - `removes[downloading]` <= `max_active_downloads` - `total_downloading`
