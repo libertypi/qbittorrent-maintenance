@@ -358,9 +358,8 @@ class qBittorrent:
             print("Jenkspy failed:", e)
             breaks = speeds.mean()
 
-        # exclude those added less than 1 day
+        # exclude those added in less than 1 day
         yesterday = pd.Timestamp.now(tz="UTC").timestamp() - 86400
-        thresh = self._deadThresh
 
         for key, val in speeds[speeds <= breaks].items():
             t = self.torrent[key]
@@ -371,7 +370,7 @@ class qBittorrent:
                     peer=t["num_incomplete"],
                     title=t["name"],
                     state=t["state"],
-                    weighted=(val > thresh),
+                    weighted=(val > self._deadThresh),
                 )
 
     def remove_torrents(self, removeList: Sequence[Removable]):
