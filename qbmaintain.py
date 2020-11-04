@@ -586,8 +586,7 @@ class MPSolver:
     ### Constraints:
     -   `download_size` - `removed_size` <= `free_space`
 
-        -   infeasible when `free_space` < `-removed_size`. Remove all
-            removables to freeup space.
+        -   infeasible when `free_space` < `-removed_size`.
 
     -   `downloads` - `removes[downloading]` <= `max_active_downloads` - `total_downloading`
 
@@ -607,17 +606,11 @@ class MPSolver:
 
         self.downloadList = self.removeList = ()
         self.downloadCand = tuple(downloadCand)
-        if not (self.downloadCand or qb.freeSpace < 0 or _debug):
-            return
 
-        self.removeCand = tuple(removeCand)
-        self.removeCandSize = sum(t.size for t in self.removeCand)
-        if qb.freeSpace <= -self.removeCandSize:
-            self.removeList = self.removeCand
-            return
-
-        self.qb = qb
-        self._solve()
+        if self.downloadCand or qb.freeSpace < 0 or _debug:
+            self.removeCand = tuple(removeCand)
+            self.qb = qb
+            self._solve()
 
     def _solve(self):
 
@@ -686,6 +679,8 @@ class MPSolver:
 
         sepSlim = "-" * 50
         qb = self.qb
+        removeCandSize = sum(t.size for t in self.removeCand)
+        downloadCandSize = sum(t.size for t in self.downloadCand)
         removeSize = sum(t.size for t in self.removeList)
         downloadSize = sum(t.size for t in self.downloadList)
         finalFreeSpace = qb.freeSpace + removeSize - downloadSize
@@ -694,30 +689,30 @@ class MPSolver:
         print(
             "Disk free space: {}. Max available: {}.".format(
                 humansize(qb.freeSpace),
-                humansize(qb.freeSpace + self.removeCandSize),
+                humansize(qb.freeSpace + removeCandSize),
             )
         )
         print(
             "Download candidates: {}. Total: {}.".format(
                 len(self.downloadCand),
-                humansize(sum(t.size for t in self.downloadCand)),
+                humansize(downloadCandSize),
             )
         )
         print(
             "Remove candidates: {}/{}. Total: {}.".format(
                 len(self.removeCand),
                 len(qb.torrent),
-                humansize(self.removeCandSize),
+                humansize(removeCandSize),
             )
         )
         for t in self.removeCand:
-            print(f"[{humansize(t.size):>11}|{t.peer:3d} peers] {t.title}")
+            print(f"[{humansize(t.size):>11}|{t.peer:4d}P] {t.title}")
 
         print(sepSlim)
         if isinstance(self.status, dict):
             print("Solution: {status}. Walltime: {walltime:.5f}s. Objective value: {value}.".format_map(self.status))
         else:
-            print("CP-SAT solver cannot find an optimal solution. Status:", self.status)
+            print("CP-SAT solver cannot find an solution. Status:", self.status)
 
         print(f"Free space after operation: {humansize(qb.freeSpace)} => {humansize(finalFreeSpace)}.")
 
@@ -736,7 +731,7 @@ class MPSolver:
                 )
             )
             for t in final:
-                print(f"[{humansize(t.size):>11}|{t.peer:3d} peers] {t.title}")
+                print(f"[{humansize(t.size):>11}|{t.peer:4d}P] {t.title}")
 
 
 def humansize(size: int) -> str:
