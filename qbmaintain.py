@@ -33,7 +33,7 @@ class Removable:
     peer: int
     title: str
     state: str
-    weighted: bool
+    value: int
 
 
 @dataclass
@@ -264,16 +264,6 @@ class qBittorrent:
                 else:
                     logger.record("Cleanup", None, path.name)
 
-    def throttle_expires(self):
-        """Throttle download speeds on expired limited-time free torrents."""
-
-        if not (self.expired.empty or _debug):
-            self._request(
-                "torrents/setDownloadLimit",
-                method="POST",
-                data={"hashes": "|".join(self.expired), "limit": 1},
-            )
-
     def get_free_space(self) -> int:
         """Return free space on seed_dir.
 
@@ -358,19 +348,26 @@ class qBittorrent:
             print("Jenkspy failed:", e)
             breaks = speeds.mean()
 
+        # If speed is bellow deadThresh, value is 1. If an expired torrent was
+        # still downloading, value is 0. Otherwise, value is None (use peer).
+        removes = {k: 1 if v <= self._deadThresh else None for k, v in speeds[speeds.values <= breaks].items()}
+        if not self.expired.empty:
+            removes.update({k: 0 for k in self.expired if self.torrent[k]["progress"] != 1})
+
         # exclude those added in less than 1 day
         yesterday = pd.Timestamp.now(tz="UTC").timestamp() - 86400
 
-        for key, val in speeds[speeds <= breaks].items():
-            t = self.torrent[key]
-            if t["added_on"] < yesterday:
+        for k, v in removes.items():
+            t = self.torrent[k]
+            if t["added_on"] < yesterday or v == 0:
+                peer = t["num_incomplete"]
                 yield Removable(
-                    hash=key,
+                    hash=k,
                     size=t["size"],
-                    peer=t["num_incomplete"],
+                    peer=peer,
                     title=t["name"],
                     state=t["state"],
-                    weighted=(val > self._deadThresh),
+                    value=peer if v is None else v,
                 )
 
     def remove_torrents(self, removeList: Sequence[Removable]):
@@ -598,19 +595,14 @@ class MPSolver:
 
     ### Objective:
     -   Maximize: `download_peer` - `removed_peer`
-
-        -   if removed.weighted is False, removed.peer == 1
     """
 
     def __init__(self, *, removeCand: Iterable[Removable], downloadCand: Iterable[Torrent], qb: qBittorrent):
 
-        self.downloadList = self.removeList = ()
         self.downloadCand = tuple(downloadCand)
-
-        if self.downloadCand or qb.freeSpace < 0 or _debug:
-            self.removeCand = tuple(removeCand)
-            self.qb = qb
-            self._solve()
+        self.removeCand = tuple(removeCand)
+        self.qb = qb
+        self._solve()
 
     def _solve(self):
 
@@ -650,9 +642,8 @@ class MPSolver:
             ).OnlyEnforceIf(has_new)
 
         # Maximize: download_peer - removed_peer
-        # -x ** 0 == -1, -x ** 1 == -x
         coef = [t.peer for t in downloadCand]
-        coef.extend(-t.peer ** t.weighted for t in removeCand)
+        coef.extend(-t.value for t in removeCand)
         model.Maximize(ScalProd(pool, coef))
 
         solver = cp_model.CpSolver()
@@ -669,27 +660,24 @@ class MPSolver:
             self.removeList = tuple(t for t in removeCand if next(value))
         else:
             self.status = solver.StatusName(status)
+            self.downloadList = self.removeList = ()
 
     def report(self):
         """Print report to stdout."""
 
-        if not hasattr(self, "status"):
-            print("Solver did not start: unnecessary condition.")
-            return
-
         sepSlim = "-" * 50
-        qb = self.qb
         removeCandSize = sum(t.size for t in self.removeCand)
         downloadCandSize = sum(t.size for t in self.downloadCand)
         removeSize = sum(t.size for t in self.removeList)
         downloadSize = sum(t.size for t in self.downloadList)
-        finalFreeSpace = qb.freeSpace + removeSize - downloadSize
+        freeSpace = self.qb.freeSpace
+        finalFreeSpace = freeSpace + removeSize - downloadSize
 
         print(sepSlim)
         print(
             "Disk free space: {}. Max available: {}.".format(
-                humansize(qb.freeSpace),
-                humansize(qb.freeSpace + removeCandSize),
+                humansize(freeSpace),
+                humansize(freeSpace + removeCandSize),
             )
         )
         print(
@@ -701,7 +689,7 @@ class MPSolver:
         print(
             "Remove candidates: {}/{}. Total: {}.".format(
                 len(self.removeCand),
-                len(qb.torrent),
+                len(self.qb.torrent),
                 humansize(removeCandSize),
             )
         )
@@ -714,7 +702,7 @@ class MPSolver:
         else:
             print("CP-SAT solver cannot find an solution. Status:", self.status)
 
-        print(f"Free space after operation: {humansize(qb.freeSpace)} => {humansize(finalFreeSpace)}.")
+        print(f"Free space after operation: {humansize(freeSpace)} => {humansize(finalFreeSpace)}.")
 
         for prefix in "remove", "download":
             final = getattr(self, prefix + "List")
@@ -809,7 +797,6 @@ def main():
         datafile=root.with_name("data"),
     )
     qb.clean_seedDir()
-    qb.throttle_expires()
 
     if qb.need_action() or _debug:
 
