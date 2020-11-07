@@ -348,26 +348,26 @@ class qBittorrent:
             print("Jenkspy failed:", e)
             breaks = speeds.mean()
 
-        # If speed is bellow deadThresh, value is 1. If an expired torrent was
-        # still downloading, value is 0. Otherwise, value is None (use peer).
-        removes = {k: 1 if v <= self._deadThresh else None for k, v in speeds[speeds.values <= breaks].items()}
+        removes = speeds[speeds.values <= breaks]
         if not self.expired.empty:
-            removes.update({k: 0 for k in self.expired if self.torrent[k]["progress"] != 1})
+            removes = removes.to_dict()
+            removes.update({k: None for k in self.expired if self.torrent[k]["progress"] != 1})
 
         # exclude those added in less than 1 day
         yesterday = pd.Timestamp.now(tz="UTC").timestamp() - 86400
+        thresh = self._deadThresh
 
         for k, v in removes.items():
             t = self.torrent[k]
-            if t["added_on"] < yesterday or v == 0:
-                peer = t["num_incomplete"]
+            if t["added_on"] < yesterday or v is None:
+                p = t["num_incomplete"]
                 yield Removable(
                     hash=k,
                     size=t["size"],
-                    peer=peer,
+                    peer=p,
                     title=t["name"],
                     state=t["state"],
-                    value=peer if v is None else v,
+                    value=0 if v is None else 1 if v <= thresh and p > 0 else p,
                 )
 
     def remove_torrents(self, removeList: Sequence[Removable]):
@@ -599,10 +599,13 @@ class MPSolver:
 
     def __init__(self, *, removeCand: Iterable[Removable], downloadCand: Iterable[Torrent], qb: qBittorrent):
 
+        self.downloadList = self.removeList = ()
         self.downloadCand = tuple(downloadCand)
-        self.removeCand = tuple(removeCand)
-        self.qb = qb
-        self._solve()
+
+        if self.downloadCand or qb.freeSpace < 0 or not qb.expired.empty or _debug:
+            self.removeCand = tuple(removeCand)
+            self.qb = qb
+            self._solve()
 
     def _solve(self):
 
@@ -660,10 +663,13 @@ class MPSolver:
             self.removeList = tuple(t for t in removeCand if next(value))
         else:
             self.status = solver.StatusName(status)
-            self.downloadList = self.removeList = ()
 
     def report(self):
         """Print report to stdout."""
+
+        if not hasattr(self, "status"):
+            print("Solver did not start: unnecessary condition.")
+            return
 
         sepSlim = "-" * 50
         removeCandSize = sum(t.size for t in self.removeCand)
