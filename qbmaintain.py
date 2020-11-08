@@ -217,12 +217,10 @@ class qBittorrent:
                 before=NOW - pd.Timedelta(1, unit="days"),
                 copy=False,
             )
-
             delete = df.columns.difference(torrentRow.columns)
             if not delete.empty:
                 df.drop(columns=delete, inplace=True, errors="ignore")
                 df.dropna(how="all", inplace=True)
-
             self.torrentData = df.append(torrentRow)
         except (TypeError, AttributeError):
             self.torrentData = torrentRow
@@ -231,13 +229,12 @@ class qBittorrent:
         try:
             df = self.history
             df = df.loc[df.index.isin(torrentRow.columns), "expire"]
-            df = df[df.values <= NOW].index
-            if not df.empty:
-                self.history.loc[df, "expire"] = pd.NaT
-            self.expired = frozenset(df)
+            self.expired = delete = df[df.values <= NOW].index
+            if not delete.empty:
+                self.history.loc[delete, "expire"] = pd.NaT
         except (TypeError, AttributeError, KeyError):
             self.history = pd.DataFrame(columns=("id", "add", "expire"))
-            self.expired = frozenset()
+            self.expired = self.history["expire"].index
 
     def clean_seedDir(self):
         """Clean files in seed dir which does not belong to qb download list."""
@@ -323,7 +320,7 @@ class qBittorrent:
             and not self.state["use_alt_speed_limits"]
             and not 0 < self.state["up_rate_limit"] < self._speedThresh[0]  # upload
             and "queuedDL" not in self.stateCount
-            or self.expired
+            or not self.expired.empty
         )
 
     def get_remove_cands(self) -> Iterator[Removable]:
@@ -349,28 +346,28 @@ class qBittorrent:
             print("Jenkspy failed:", e)
             breaks = speeds.mean()
 
+        # values in (hash: value) pairs:
+        # speed > deadThresh: None (use peer)
+        # speed <= deadThresh: 1 (minimum value to be considered)
+        # expired when still downloading: 0 (delete unconditionally)
+        removes = {k: 1 if v <= self._deadThresh else None for k, v in speeds[speeds.values <= breaks].items()}
+        if not self.expired.empty:
+            removes.update({k: 0 for k in self.expired if self.torrent[k]["progress"] != 1})
+
         # exclude those added in less than 1 day
         yesterday = pd.Timestamp.now(tz="UTC").timestamp() - 86400
 
-        for k, v in speeds.items():
+        for k, v in removes.items():
             t = self.torrent[k]
-            peer = t["num_incomplete"]
-
-            if k in self.expired and t["progress"] != 1:
-                value = 0
-            elif v <= breaks and t["added_on"] < yesterday:
-                value = 1 if v <= self._deadThresh and peer > 0 else peer
-            else:
-                continue
-
-            yield Removable(
-                hash=k,
-                size=t["size"],
-                peer=peer,
-                title=t["name"],
-                state=t["state"],
-                value=value,
-            )
+            if t["added_on"] < yesterday or v == 0:
+                yield Removable(
+                    hash=k,
+                    size=t["size"],
+                    peer=t["num_incomplete"],
+                    title=t["name"],
+                    state=t["state"],
+                    value=v,
+                )
 
     def remove_torrents(self, removeList: Sequence[Removable]):
         """Remove torrents and delete files."""
@@ -420,7 +417,7 @@ class qBittorrent:
 
         # cleanup outdated records (older than 30 days and not in app)
         df = self.history
-        df = df[df.index.isin(self.torrentData.columns) | (df["add"] > NOW - pd.Timedelta(30, unit="days"))]
+        df = df[df.index.isin(self.torrentData.columns) | (df["add"].values > NOW - pd.Timedelta(30, unit="days"))]
 
         # save new info to dataframe
         self.history = df.append(
@@ -604,7 +601,7 @@ class MPSolver:
         self.downloadList = self.removeList = ()
         self.downloadCand = tuple(downloadCand)
 
-        if self.downloadCand or qb.freeSpace < 0 or qb.expired or _debug:
+        if self.downloadCand or qb.freeSpace < 0 or not qb.expired.empty or _debug:
             self.removeCand = tuple(removeCand)
             self.qb = qb
             self._solve()
@@ -648,7 +645,7 @@ class MPSolver:
 
         # Maximize: download_peer - removed_peer
         coef = [t.peer for t in downloadCand]
-        coef.extend(-t.value for t in removeCand)
+        coef.extend(-t.peer if t.value is None else -t.value for t in removeCand)
         model.Maximize(ScalProd(pool, coef))
 
         solver = cp_model.CpSolver()
