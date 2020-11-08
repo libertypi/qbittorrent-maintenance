@@ -348,27 +348,27 @@ class qBittorrent:
             print("Jenkspy failed:", e)
             breaks = speeds.mean()
 
-        removes = speeds[speeds.values <= breaks]
-        if not self.expired.empty:
-            removes = removes.to_dict()
-            removes.update({k: None for k in self.expired if self.torrent[k]["progress"] != 1})
-
         # exclude those added in less than 1 day
         yesterday = pd.Timestamp.now(tz="UTC").timestamp() - 86400
-        thresh = self._deadThresh
 
-        for k, v in removes.items():
+        for k, v in speeds.items():
             t = self.torrent[k]
-            if t["added_on"] < yesterday or v is None:
-                p = t["num_incomplete"]
-                yield Removable(
-                    hash=k,
-                    size=t["size"],
-                    peer=p,
-                    title=t["name"],
-                    state=t["state"],
-                    value=0 if v is None else 1 if v <= thresh and p > 0 else p,
-                )
+
+            if k in self.expired and t["progress"] != 1:
+                v = 0
+            elif v <= breaks and t["added_on"] < yesterday:
+                v = 1 if v <= self._deadThresh else None
+            else:
+                continue
+
+            yield Removable(
+                hash=k,
+                size=t["size"],
+                peer=t["num_incomplete"],
+                title=t["name"],
+                state=t["state"],
+                value=v,
+            )
 
     def remove_torrents(self, removeList: Sequence[Removable]):
         """Remove torrents and delete files."""
@@ -646,7 +646,7 @@ class MPSolver:
 
         # Maximize: download_peer - removed_peer
         coef = [t.peer for t in downloadCand]
-        coef.extend(-t.value for t in removeCand)
+        coef.extend(-t.peer if t.value is None else -t.value for t in removeCand)
         model.Maximize(ScalProd(pool, coef))
 
         solver = cp_model.CpSolver()
