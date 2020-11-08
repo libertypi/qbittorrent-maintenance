@@ -231,12 +231,13 @@ class qBittorrent:
         try:
             df = self.history
             df = df.loc[df.index.isin(torrentRow.columns), "expire"]
-            self.expired = delete = df[df <= NOW].index
-            if not delete.empty:
-                self.history.loc[delete, "expire"] = pd.NaT
+            df = df[df.values <= NOW].index
+            if not df.empty:
+                self.history.loc[df, "expire"] = pd.NaT
+            self.expired = frozenset(df)
         except (TypeError, AttributeError, KeyError):
             self.history = pd.DataFrame(columns=("id", "add", "expire"))
-            self.expired = self.history["expire"].index
+            self.expired = frozenset()
 
     def clean_seedDir(self):
         """Clean files in seed dir which does not belong to qb download list."""
@@ -322,7 +323,7 @@ class qBittorrent:
             and not self.state["use_alt_speed_limits"]
             and not 0 < self.state["up_rate_limit"] < self._speedThresh[0]  # upload
             and "queuedDL" not in self.stateCount
-            or not self.expired.empty
+            or self.expired
         )
 
     def get_remove_cands(self) -> Iterator[Removable]:
@@ -353,21 +354,22 @@ class qBittorrent:
 
         for k, v in speeds.items():
             t = self.torrent[k]
+            peer = t["num_incomplete"]
 
             if k in self.expired and t["progress"] != 1:
-                v = 0
+                value = 0
             elif v <= breaks and t["added_on"] < yesterday:
-                v = 1 if v <= self._deadThresh else None
+                value = 1 if v <= self._deadThresh and peer > 0 else peer
             else:
                 continue
 
             yield Removable(
                 hash=k,
                 size=t["size"],
-                peer=t["num_incomplete"],
+                peer=peer,
                 title=t["name"],
                 state=t["state"],
-                value=v,
+                value=value,
             )
 
     def remove_torrents(self, removeList: Sequence[Removable]):
@@ -602,7 +604,7 @@ class MPSolver:
         self.downloadList = self.removeList = ()
         self.downloadCand = tuple(downloadCand)
 
-        if self.downloadCand or qb.freeSpace < 0 or not qb.expired.empty or _debug:
+        if self.downloadCand or qb.freeSpace < 0 or qb.expired or _debug:
             self.removeCand = tuple(removeCand)
             self.qb = qb
             self._solve()
@@ -646,7 +648,7 @@ class MPSolver:
 
         # Maximize: download_peer - removed_peer
         coef = [t.peer for t in downloadCand]
-        coef.extend(-t.peer if t.value is None else -t.value for t in removeCand)
+        coef.extend(-t.value for t in removeCand)
         model.Maximize(ScalProd(pool, coef))
 
         solver = cp_model.CpSolver()
