@@ -229,12 +229,12 @@ class qBittorrent:
         try:
             df = self.history
             df = df.loc[df.index.isin(torrentRow.columns), "expire"]
-            self.expired = delete = df[df.values <= NOW].index
-            if not delete.empty:
-                self.history.loc[delete, "expire"] = pd.NaT
+            self.expired: pd.Index = df.index[df.values <= NOW]
+            if not self.expired.empty:
+                self.history.loc[self.expired, "expire"] = pd.NaT
         except (TypeError, AttributeError, KeyError):
             self.history = pd.DataFrame(columns=("id", "add", "expire"))
-            self.expired = self.history["expire"].index
+            self.expired = self.history.index
 
     def clean_seedDir(self):
         """Clean files in seed dir which does not belong to qb download list."""
