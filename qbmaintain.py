@@ -298,13 +298,18 @@ class qBittorrent:
         -   some limited-time free torrents have just expired
 
         False if:
+        -   qBittorrent is busy (checking, moving data...)
         -   during silence period (explicitly set after a successful download)
-        -   has torrents in download queue
+        -   queued downloading
         -   any other situations
         """
 
         speeds = self.get_speed()
         print("Last hour avg speed: UL: {}/s, DL: {}/s.".format(*map(humansize, speeds)))
+
+        busy = {"checkingUP", "allocating", "checkingDL", "checkingResumeData", "moving"}
+        if not busy.isdisjoint(self.stateCount):
+            return False
 
         if self.get_free_space() < 0:
             return True
