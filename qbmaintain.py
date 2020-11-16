@@ -244,12 +244,16 @@ class qBittorrent:
         except AttributeError:
             return
 
+        found = False
         names = {v["name"] for v in self.torrent.values()}
         for path in iterdir:
             if path.name not in names:
                 if path.suffix == ".!qB" and path.stem in names:
                     continue
+
                 print("Cleanup:", path.name)
+                found = True
+
                 try:
                     if _debug:
                         pass
@@ -262,26 +266,35 @@ class qBittorrent:
                 else:
                     logger.record("Cleanup", None, path.name)
 
-    def get_free_space(self) -> int:
+        if found:
+            try:
+                del self._freeSpace
+            except AttributeError:
+                pass
+
+    @property
+    def freeSpace(self):
         """Return free space on seed_dir.
 
         `free_space` = `free_space_on_disk` - `disk_quota` - `amount_left_to_download`
         """
-        real = self.state["free_space_on_disk"]
-
         try:
-            f = shutil.disk_usage(self.seedDir).free
-        except TypeError:
-            pass
-        else:
-            if f > real:
-                real = f
+            space = self._freeSpace
+        except AttributeError:
+            real = self.state["free_space_on_disk"]
+            try:
+                f = shutil.disk_usage(self.seedDir).free
+            except TypeError:
+                pass
+            else:
+                if f > real:
+                    real = f
+            space = self._freeSpace = int(real - self._spaceOffset)
+        return space
 
-        self.freeSpace = int(real - self._spaceOffset)
-        return self.freeSpace
-
-    def get_speed(self):
-        """Calculate qBittorrent last hour ul/dl speeds.
+    @property
+    def speeds(self):
+        """qBittorrent last hour ul/dl speeds.
 
         Returns: numpy.array([<ul>, <dl>])
         """
@@ -304,14 +317,14 @@ class qBittorrent:
         -   any other situations
         """
 
-        speeds = self.get_speed()
+        speeds = self.speeds
         print("Last hour avg speed: UL: {}/s, DL: {}/s.".format(*map(humansize, speeds)))
 
         busy = {"checkingUP", "allocating", "checkingDL", "checkingResumeData", "moving"}
         if not busy.isdisjoint(self.stateCount):
             return False
 
-        if self.get_free_space() < 0:
+        if self.freeSpace < 0:
             return True
 
         try:
@@ -567,9 +580,10 @@ class MTeam:
 
                 except Exception as e:
                     print("Parsing page error:", e)
-                else:
-                    visited.add(tid)
-                    yield Torrent(id=tid, size=size, peer=peer, link=link, expire=expire, title=title)
+                    continue
+
+                visited.add(tid)
+                yield Torrent(id=tid, size=size, peer=peer, link=link, expire=expire, title=title)
 
     def download(self, downloadList: Sequence[Torrent]):
         """Download torrents from mteam."""
