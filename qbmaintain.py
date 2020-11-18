@@ -364,11 +364,15 @@ class qBittorrent:
             print("Jenkspy failed:", e)
             breaks = speeds.mean()
 
+        thresh = self._deadThresh
+        if breaks < thresh:
+            breaks = thresh
+
         # values in (hash: value) pairs:
         # speed > deadThresh: None (use peer)
         # speed <= deadThresh: 1 (minimum value to be considered)
         # expired when still downloading: 0 (delete unconditionally)
-        removes = {k: 1 if v <= self._deadThresh else None for k, v in speeds[speeds.values <= breaks].items()}
+        removes = {k: 1 if v <= thresh else None for k, v in speeds[speeds.values <= breaks].items()}
         if not self.expired.empty:
             removes.update({k: 0 for k in self.expired if self.torrent[k]["progress"] != 1})
 
