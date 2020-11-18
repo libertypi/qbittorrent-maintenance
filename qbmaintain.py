@@ -807,8 +807,8 @@ def read_config(configfile: Path):
 
 def main():
 
-    root = Path(__file__)
-    basic, mt = read_config(root.with_name("config.ini"))
+    root = Path(__file__).parent
+    basic, mt = read_config(root.joinpath("config.ini"))
 
     qb = qBittorrent(
         host=basic["host"],
@@ -816,7 +816,7 @@ def main():
         diskQuota=basic.getfloat("disk_quota"),
         speedThresh=(basic.getint("up_rate_thresh"), basic.getint("dl_rate_thresh")),
         deadThresh=basic.getint("dead_torrent_up_thresh"),
-        datafile=root.with_name("data"),
+        datafile=root.joinpath("data"),
     )
     qb.clean_seedDir()
 
@@ -842,7 +842,7 @@ def main():
     qb.dump_data()
 
     logger.write(
-        logfile=root.with_name("logfile.log"),
+        logfile=root.joinpath("logfile.log"),
         copy_to=basic["log_backup_dir"] or None,
     )
 
