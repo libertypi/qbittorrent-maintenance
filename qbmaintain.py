@@ -499,23 +499,17 @@ class MTeam:
                 if "/login.php" not in response.url:
                     return response
                 if retry < 2:
-                    self._login()
+                    self.session.post(
+                        url=f"{self.domain}/takelogin.php",
+                        data={"username": self.account[0], "password": self.account[1]},
+                        headers={"referer": f"{self.domain}/login.php"},
+                    )
                 else:
                     print("Login failed.")
             except (requests.ConnectionError, requests.HTTPError, requests.Timeout) as e:
                 print("Connection error:", e)
             except (requests.RequestException, AttributeError, TypeError):
                 self.session = self.qb.init_session()
-
-    def _login(self):
-
-        if not hasattr(self, "loginParam"):
-            self.loginParam = {
-                "url": f"{self.domain}/takelogin.php",
-                "data": {"username": self.account[0], "password": self.account[1]},
-                "headers": {"referer": f"{self.domain}/login.php"},
-            }
-        self.session.post(**self.loginParam)
 
     def fetch(self) -> Iterator[Torrent]:
 
