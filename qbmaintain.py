@@ -368,28 +368,36 @@ class qBittorrent:
         if breaks < thresh:
             breaks = thresh
 
-        # values in (hash: value) pairs:
-        # speed > deadThresh: None (use peer)
-        # speed <= deadThresh: 1 (minimum value to be considered)
-        # expired when still downloading: 0 (delete unconditionally)
-        removes = {k: 1 if v <= thresh else None for k, v in speeds[speeds.values <= breaks].items()}
+        removes = speeds[speeds.values <= breaks]
         if not self.expired.empty:
-            removes.update({k: 0 for k in self.expired if self.torrent[k]["progress"] != 1})
+            removes = removes.to_dict()
+            removes.update({k: -1 for k in self.expired if self.torrent[k]["progress"] != 1})
 
         # exclude those added in less than 1 day
         yesterday = pd.Timestamp.now(tz="UTC").timestamp() - 86400
 
+        # values in Removable:
+        # speed > deadThresh: None (use peer)
+        # speed <= deadThresh: 1 (minimum value to be considered)
+        # expired when still downloading: 0 (delete unconditionally)
         for k, v in removes.items():
             t = self.torrent[k]
-            if t["added_on"] < yesterday or v == 0:
-                yield Removable(
-                    hash=k,
-                    size=t["size"],
-                    peer=t["num_incomplete"],
-                    title=t["name"],
-                    state=t["state"],
-                    value=v,
-                )
+            if v < 0:
+                v = 0
+            elif t["added_on"] > yesterday:
+                continue
+            elif v <= thresh:
+                v = 1
+            else:
+                v = None
+            yield Removable(
+                hash=k,
+                size=t["size"],
+                peer=t["num_incomplete"],
+                title=t["name"],
+                state=t["state"],
+                value=v,
+            )
 
     def remove_torrents(self, removeList: Sequence[Removable]):
         """Remove torrents and delete files."""
