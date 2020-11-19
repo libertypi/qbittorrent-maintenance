@@ -376,7 +376,7 @@ class qBittorrent:
         # exclude those added in less than 1 day
         yesterday = pd.Timestamp.now(tz="UTC").timestamp() - 86400
 
-        # values in Removable:
+        # values in Removables:
         # speed > deadThresh: None (use peer)
         # speed <= deadThresh: 1 (minimum value to be considered)
         # expired when still downloading: 0 (delete unconditionally)
