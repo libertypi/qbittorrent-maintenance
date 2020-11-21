@@ -33,7 +33,7 @@ class Removable:
     peer: int
     title: str
     state: str
-    value: int
+    weight: int
 
 
 @dataclass
@@ -371,18 +371,18 @@ class qBittorrent:
         removes = speeds[speeds.values <= breaks]
         if not self.expired.empty:
             removes = removes.to_dict()
-            removes.update({k: -1 for k in self.expired if self.torrent[k]["progress"] != 1})
+            removes.update({k: None for k in self.expired if self.torrent[k]["progress"] != 1})
 
         # exclude those added in less than 1 day
         yesterday = pd.Timestamp.now(tz="UTC").timestamp() - 86400
 
-        # values in Removables:
-        # speed > deadThresh: None (use peer)
+        # weight in Removables:
+        # speed > deadThresh: None (use the same factor as new torrents)
         # speed <= deadThresh: 1 (minimum value to be considered)
         # expired when still downloading: 0 (delete unconditionally)
         for k, v in removes.items():
             t = self.torrent[k]
-            if v < 0:
+            if v is None:
                 v = 0
             elif t["added_on"] > yesterday:
                 continue
@@ -396,7 +396,7 @@ class qBittorrent:
                 peer=t["num_incomplete"],
                 title=t["name"],
                 state=t["state"],
-                value=v,
+                weight=v,
             )
 
     def remove_torrents(self, removeList: Sequence[Removable]):
@@ -669,8 +669,9 @@ class MPSolver:
             ).OnlyEnforceIf(has_new)
 
         # Maximize: download_peer - removed_peer
-        coef = [t.peer for t in downloadCand]
-        coef.extend(-t.peer if t.value is None else -t.value for t in removeCand)
+        factor = sum(t.peer for t in removeCand if t.weight == 1) + 1
+        coef = [t.peer * factor for t in downloadCand]
+        coef.extend(-t.peer * (factor if t.weight is None else t.weight) for t in removeCand)
         model.Maximize(ScalProd(pool, coef))
 
         solver = cp_model.CpSolver()
