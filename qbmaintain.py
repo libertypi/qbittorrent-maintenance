@@ -279,7 +279,7 @@ class qBittorrent:
         `free_space` = `free_space_on_disk` - `disk_quota` - `amount_left_to_download`
         """
         try:
-            space = self._freeSpace
+            return self._freeSpace
         except AttributeError:
             real = self.state["free_space_on_disk"]
             try:
@@ -289,8 +289,8 @@ class qBittorrent:
             else:
                 if f > real:
                     real = f
-            space = self._freeSpace = int(real - self._spaceOffset)
-        return space
+            f = self._freeSpace = int(real - self._spaceOffset)
+            return f
 
     @property
     def speeds(self):
