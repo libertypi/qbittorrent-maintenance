@@ -579,7 +579,7 @@ class MTeam:
                     if expire:
                         if "日" not in expire:
                             continue
-                        expire = expire.split("：", 1)[1].translate(transTable)
+                        expire = expire.partition("：")[2].translate(transTable)
 
                     title = tr[colTitle].find("a", href=re_details, string=True)
                     title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
