@@ -107,6 +107,12 @@ class Logger:
 class qBittorrent:
     """The manager class for communicating with qBittorrent and data persistence."""
 
+    appData: pd.DataFrame
+    torrentData: pd.DataFrame
+    history: pd.DataFrame
+    silence: pd.Timestamp
+    session: requests.Session
+
     def __init__(
         self,
         *,
@@ -150,12 +156,6 @@ class qBittorrent:
 
     def _load_data(self):
         """Load data objects from pickle."""
-
-        self.appData: pd.DataFrame
-        self.torrentData: pd.DataFrame
-        self.history: pd.DataFrame
-        self.silence: pd.Timestamp
-        self.session: requests.Session
 
         try:
             with self.datafile.open(mode="rb") as f:
