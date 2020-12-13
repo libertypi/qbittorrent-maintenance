@@ -272,36 +272,6 @@ class qBittorrent:
             except AttributeError:
                 pass
 
-    @property
-    def freeSpace(self):
-        """Return free space on seed_dir.
-
-        `free_space` = `free_space_on_disk` - `disk_quota` - `amount_left_to_download`
-        """
-        try:
-            return self._freeSpace
-        except AttributeError:
-            real = self.state["free_space_on_disk"]
-            try:
-                f = shutil.disk_usage(self.seedDir).free
-            except TypeError:
-                pass
-            else:
-                if f > real:
-                    real = f
-            f = self._freeSpace = int(real - self._spaceOffset)
-            return f
-
-    @property
-    def speeds(self):
-        """qBittorrent last hour ul/dl speeds.
-
-        Returns: numpy.array([<ul>, <dl>])
-        """
-        hi = self.appData.iloc[-1]
-        lo = self.appData.iloc[0]
-        return (hi.values - lo.values) / (hi.name - lo.name).total_seconds()
-
     def need_action(self) -> bool:
         """Whether the current situation requires further action (downloads or removals).
 
@@ -345,14 +315,7 @@ class qBittorrent:
         """Discover the slowest torrents using jenks natural breaks."""
 
         # calculate avg speed for each torrent
-        df = self.torrentData
-        hi = df.iloc[-1]
-        lo = df.apply(pd.Series.first_valid_index)
-        try:
-            speeds: pd.Series = (hi.values - df.lookup(lo, lo.index)) / (hi.name - lo).dt.total_seconds()
-            speeds.dropna(inplace=True)
-        except AttributeError:
-            return
+        speeds = self.torrent_speed
 
         # get 1/3 break point using jenks method
         try:
@@ -469,12 +432,73 @@ class qBittorrent:
 
     def resume_paused(self):
         """If any torrent is paused, for any reason, resume."""
-
         paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
         if not paused.isdisjoint(self.stateCount):
             print("Resume torrents.")
             if not _debug:
                 self._request("torrents/resume", params={"hashes": "all"})
+
+    @property
+    def freeSpace(self):
+        """Return free space on seed_dir.
+
+        `free_space` = `free_space_on_disk` - `disk_quota` - `amount_left_to_download`
+        """
+        try:
+            return self._freeSpace
+        except AttributeError:
+            real = self.state["free_space_on_disk"]
+            try:
+                f = shutil.disk_usage(self.seedDir).free
+            except TypeError:
+                pass
+            else:
+                if f > real:
+                    real = f
+            f = self._freeSpace = int(real - self._spaceOffset)
+            return f
+
+    @property
+    def speeds(self):
+        """qBittorrent last hour ul/dl speeds.
+
+        Returns: numpy.array([<ul>, <dl>])
+        """
+        df = self.appData
+        hi = df.iloc[-1]
+        lo = df.iloc[0]
+        s = hi.values - lo.values
+        t = (hi.name - lo.name).total_seconds()
+
+        if (s < 0).any() or t <= 0:
+            self.appData = df.iloc[[-1]]
+            return pd.array((None, None), dtype=float).to_numpy()
+
+        return s / t
+
+    @property
+    def torrent_speed(self) -> pd.Series:
+        """Avg speeds for each torrents in the last 24 hours.
+
+        Torrents without meaningful speed (not enough records) will be removed
+        from result.
+        """
+        df = self.torrentData
+        hi = df.iloc[-1]
+        lo = df.apply(pd.Series.first_valid_index)
+
+        try:
+            speeds: pd.Series
+            speeds = (hi.values - df.lookup(lo, lo.index)) / (hi.name - lo).dt.total_seconds()
+            speeds.dropna(inplace=True)
+
+            if (speeds.values < 0).any():
+                raise ValueError
+        except (ValueError, AttributeError):
+            self.torrentData = df.iloc[[-1]]
+            return pd.Series(dtype=float)
+
+        return speeds
 
 
 class MTeam:
@@ -527,12 +551,12 @@ class MTeam:
         A, B = self.minPeer
         visited = set(self.qb.history["id"])
         transTable = str.maketrans({"日": "D", "時": "H", "分": "T"})
+        sub_nondigit = re_compile(r"[^0-9]+").sub
+        search_size = re_compile(r"(?P<num>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)").search
+        search_id = re_compile(r"\bid=(?P<id>[0-9]+)").search
 
         re_download = re_compile(r"\bdownload\.php\?")
         re_details = re_compile(r"\bdetails\.php\?")
-        re_nondigit = re_compile(r"[^0-9]+")
-        re_size = re_compile(r"(?P<num>[0-9]+(\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)")
-        re_id = re_compile(r"\bid=(?P<id>[0-9]+)")
         re_timelimit = re_compile(r"^\s*限時：")
 
         print(f"Connecting to M-Team... Pages: {len(self.feeds)}.")
@@ -541,7 +565,7 @@ class MTeam:
             try:
                 soup = BeautifulSoup(self._get(feed).content, "lxml")
                 soup = (tr.find_all("td", recursive=False) for tr in soup.select("#form_torrent table.torrents > tr"))
-                tr = next(soup)
+                row = next(soup)
             except AttributeError:
                 print("Fetching failed:", feed)
                 continue
@@ -551,7 +575,7 @@ class MTeam:
             else:
                 print("Fetching success.")
 
-            for i, td in enumerate(tr):
+            for i, td in enumerate(row):
                 title = td.find(title=True)
                 title = title["title"] if title else td.get_text(strip=True)
                 cols[title] = i
@@ -562,26 +586,26 @@ class MTeam:
             colDown = cols.pop("下載數", 6)
             colProg = cols.pop("進度", 8)
 
-            for tr in soup:
+            for row in soup:
                 try:
-                    peer = int(re_nondigit.sub("", tr[colDown].get_text()))
-                    size = re_size.search(tr[colSize].get_text())
+                    peer = int(sub_nondigit("", row[colDown].get_text()))
+                    size = search_size(row[colSize].get_text())
                     size = int(float(size["num"]) * byteSize[size["unit"]])
-                    if peer < A * size + B or "peer-active" in tr[colProg]["class"]:
+                    if peer < A * size + B or "peer-active" in row[colProg]["class"]:
                         continue
 
-                    link = tr[colTitle].find("a", href=re_download)["href"]
-                    tid = re_id.search(link)["id"]
-                    if tid in visited or tr[colUp].get_text(strip=True) == "0":
+                    link = row[colTitle].find("a", href=re_download)["href"]
+                    tid = search_id(link)["id"]
+                    if tid in visited or row[colUp].get_text(strip=True) == "0":
                         continue
 
-                    expire = tr[colTitle].find(string=re_timelimit)
+                    expire = row[colTitle].find(string=re_timelimit)
                     if expire:
                         if "日" not in expire:
                             continue
                         expire = expire.partition("：")[2].translate(transTable)
 
-                    title = tr[colTitle].find("a", href=re_details, string=True)
+                    title = row[colTitle].find("a", href=re_details, string=True)
                     title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
 
                 except Exception as e:
@@ -625,19 +649,20 @@ class MPSolver:
 
         self.downloadList = self.removeList = ()
         self.downloadCand = tuple(downloadCand)
+        self.removeCand = tuple(removeCand)
+        self.qb = qb
+        self.status = None
 
-        if self.downloadCand or qb.freeSpace < 0 or not qb.expired.empty or _debug:
-            self.removeCand = tuple(removeCand)
-            self.qb = qb
-            self._solve()
-
-    def _solve(self):
-
-        from ortools.sat.python import cp_model
+    def solve(self):
 
         downloadCand = self.downloadCand
         removeCand = self.removeCand
         qb = self.qb
+
+        if not downloadCand and qb.freeSpace >= 0 and qb.expired.empty and not _debug:
+            return
+
+        from ortools.sat.python import cp_model
 
         model = cp_model.CpModel()
         Sum = cp_model.LinearExpr.Sum
@@ -692,7 +717,7 @@ class MPSolver:
     def report(self):
         """Print report to stdout."""
 
-        if not hasattr(self, "status"):
+        if not self.status:
             print("Solver did not start: unnecessary condition.")
             return
 
@@ -842,16 +867,16 @@ def main():
             downloadCand=mteam.fetch(),
             qb=qb,
         )
+        solver.solve()
 
         qb.remove_torrents(solver.removeList)
-        qb.add_torrent(solver.downloadList, mteam.download(solver.downloadList))
+        qb.add_torrent(solver.downloadList, content=mteam.download(solver.downloadList))
         solver.report()
 
     qb.resume_paused()
     qb.dump_data()
-
     logger.write(
-        logfile=root.joinpath("logfile.log"),
+        root.joinpath("logfile.log"),
         copy_to=basic["log_backup_dir"] or None,
     )
 
