@@ -491,14 +491,13 @@ class qBittorrent:
             speeds: pd.Series
             speeds = (hi.values - df.lookup(lo, lo.index)) / (hi.name - lo).dt.total_seconds()
             speeds.dropna(inplace=True)
+            if (speeds.values >= 0).all():
+                return speeds
+        except AttributeError:
+            pass
 
-            if (speeds.values < 0).any():
-                raise ValueError
-        except (AttributeError, ValueError):
-            self.torrentData = df.iloc[[-1]]
-            return pd.Series(dtype=float)
-
-        return speeds
+        self.torrentData = df.iloc[[-1]]
+        return pd.Series(dtype=float)
 
 
 class MTeam:
