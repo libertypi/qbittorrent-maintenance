@@ -659,9 +659,6 @@ class MPSolver:
         removeCand = self.removeCand
         qb = self.qb
 
-        if not downloadCand and qb.freeSpace >= 0 and qb.expired.empty and not _debug:
-            return
-
         from ortools.sat.python import cp_model
 
         model = cp_model.CpModel()
@@ -718,7 +715,7 @@ class MPSolver:
         """Print report to stdout."""
 
         if not self.status:
-            print("Solver did not start: unnecessary condition.")
+            print("Solver did not start.")
             return
 
         sepSlim = "-" * 50
