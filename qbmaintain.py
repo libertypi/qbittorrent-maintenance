@@ -439,7 +439,7 @@ class qBittorrent:
                 self._request("torrents/resume", params={"hashes": "all"})
 
     @property
-    def freeSpace(self):
+    def freeSpace(self) -> int:
         """Return free space on seed_dir.
 
         `free_space` = `free_space_on_disk` - `disk_quota` - `amount_left_to_download`
@@ -494,7 +494,7 @@ class qBittorrent:
 
             if (speeds.values < 0).any():
                 raise ValueError
-        except (ValueError, AttributeError):
+        except (AttributeError, ValueError):
             self.torrentData = df.iloc[[-1]]
             return pd.Series(dtype=float)
 
