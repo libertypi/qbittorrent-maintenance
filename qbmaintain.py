@@ -510,7 +510,7 @@ class MTeam:
         Where (A, B) is defined in config file and passed via `minPeer`.
     """
 
-    domain = "https://pt.m-team.cc"
+    domain = "https://pt.m-team.cc/"
 
     def __init__(self, *, feeds: Iterable[str], account: Tuple[str, str], minPeer: Tuple[float, int], qb: qBittorrent):
 
@@ -531,9 +531,9 @@ class MTeam:
                     return response
                 if retry < 2:
                     self.session.post(
-                        url=f"{self.domain}/takelogin.php",
+                        url=self.domain + "takelogin.php",
                         data={"username": self.account[0], "password": self.account[1]},
-                        headers={"referer": f"{self.domain}/login.php"},
+                        headers={"referer": self.domain + "login.php"},
                     )
                 else:
                     print("Login failed.")
