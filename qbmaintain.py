@@ -604,8 +604,7 @@ class MTeam:
                             continue
                         expire = expire.partition("：")[2].translate(transTable)
 
-                    title = row[colTitle].find("a", href=re_details, string=True)
-                    title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
+                    title = row[colTitle].find("a", href=re_details, string=True).string
 
                 except Exception as e:
                     print("Parsing page error:", e)
