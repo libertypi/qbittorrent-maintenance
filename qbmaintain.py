@@ -214,14 +214,15 @@ class qBittorrent:
         # cleanup deleted torrents and append new row
         try:
             df = self.torrentData.truncate(before=NOW - pd.Timedelta(1, unit="days"), copy=False)
-            last = df.iloc[-1]
-            if last.name >= NOW or last.gt(torrent_row.iloc[0]).any():
-                raise ValueError
 
             delete = df.columns.difference(torrent_row.columns)
             if not delete.empty:
                 df.drop(columns=delete, inplace=True, errors="ignore")
                 df.dropna(how="all", inplace=True)
+
+            last = df.iloc[-1]
+            if last.name >= NOW or last.gt(torrent_row.iloc[0]).any():
+                raise ValueError
         except Exception:
             self.torrentData = torrent_row
         else:
