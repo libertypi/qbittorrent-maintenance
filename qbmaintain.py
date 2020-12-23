@@ -196,22 +196,27 @@ class qBittorrent:
 
         # new rows for application and torrents
         app_row = pd.DataFrame(
-            {"upload": self.state["alltime_ul"], "download": self.state["alltime_dl"]}, index=(NOW,)
+            {"upload": self.state["alltime_ul"], "download": self.state["alltime_dl"]},
+            index=(NOW,),
         )
-        torrent_row = pd.DataFrame({k: v["uploaded"] for k, v in self.torrent.items()}, index=(NOW,))
+        torrent_row = pd.DataFrame(
+            {k: v["uploaded"] for k, v in self.torrent.items()},
+            index=(NOW,),
+        )
 
-        # truncate application dataframe and append new row
+        # qBittorrent overall ul/dl speeds
         try:
             df = self.appData.truncate(before=NOW - pd.Timedelta(1, unit="hours"), copy=False)
+
             last = df.iloc[-1]
             if last.name >= NOW or (last.values > app_row.values).any():
                 raise ValueError
+
+            self.appData = df.append(app_row)
         except Exception:
             self.appData = app_row
-        else:
-            self.appData = df.append(app_row)
 
-        # cleanup deleted torrents and append new row
+        # upload speeds of each torrent
         try:
             df = self.torrentData.truncate(before=NOW - pd.Timedelta(1, unit="days"), copy=False)
 
@@ -223,15 +228,16 @@ class qBittorrent:
             last = df.iloc[-1]
             if last.name >= NOW or last.gt(torrent_row.iloc[0]).any():
                 raise ValueError
+
+            self.torrentData = df.append(torrent_row)
         except Exception:
             self.torrentData = torrent_row
-        else:
-            self.torrentData = df.append(torrent_row)
 
-        # select expiration record of current torrents
+        # expiration records of current torrents
         try:
             df = self.history
             df = df.loc[df.index.isin(torrent_row.columns), "expire"]
+
             self.expired: pd.Index = df.index[df.values <= NOW]
             if not self.expired.empty:
                 self.history.loc[self.expired, "expire"] = pd.NaT
