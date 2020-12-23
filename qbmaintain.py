@@ -717,7 +717,7 @@ class MPSolver:
     def report(self):
         """Print report to stdout."""
 
-        if not self.status:
+        if self.status is None:
             print("Solver did not start.")
             return
 
