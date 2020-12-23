@@ -9,16 +9,12 @@ from re import compile as re_compile
 from typing import Iterable, Iterator, Mapping, Sequence, Tuple
 from urllib.parse import urljoin
 
-# Beautifulsoup and ortools are imported as needed
+# Beautifulsoup, ortools, jenkspy, torrentool are imported as needed
 import pandas as pd
 import requests
-from jenkspy import jenks_breaks
-from torrentool.api import Torrent as TorrentParser
-from torrentool.exceptions import TorrentoolException
 
 _debug: bool = False
 NOW = pd.Timestamp.now()
-
 byteSize: Mapping[str, int] = {
     k: v for kk, v in zip(((f"{c}B", f"{c}iB") for c in "KMGTP"), (1024 ** i for i in range(1, 6))) for k in kk
 }
@@ -117,10 +113,10 @@ class qBittorrent:
         self,
         *,
         host: str,
-        seedDir: str,
-        diskQuota: float,
-        speedThresh: Tuple[int, int],
-        deadThresh: int,
+        seed_dir: str,
+        disk_quota: float,
+        speed_thresh: Tuple[int, int],
+        dead_thresh: int,
         datafile: Path,
     ):
 
@@ -132,16 +128,16 @@ class qBittorrent:
             raise RuntimeError("qBittorrent is not connected to the internet.")
 
         try:
-            self.seedDir = Path(seedDir)
+            self.seed_dir = Path(seed_dir)
         except TypeError:
-            self.seedDir = None
+            self.seed_dir = None
 
         values = self.torrent.values()
-        self.stateCount = Counter(v["state"] for v in values)
-        self._spaceOffset = sum(v["amount_left"] for v in values) + diskQuota * byteSize["GiB"]
+        self.state_counter = Counter(v["state"] for v in values)
+        self._space_offset = sum(v["amount_left"] for v in values) + disk_quota * byteSize["GiB"]
 
-        self._speedThresh = tuple(v * byteSize["KiB"] for v in speedThresh)
-        self._deadThresh = deadThresh * byteSize["KiB"]
+        self._speed_thresh = tuple(v * byteSize["KiB"] for v in speed_thresh)
+        self._dead_thresh = dead_thresh * byteSize["KiB"]
         self.datafile = datafile if isinstance(datafile, Path) else Path(datafile)
 
         self._load_data()
@@ -199,48 +195,54 @@ class qBittorrent:
         """Record qBittorrent traffic info to pandas DataFrame."""
 
         # new rows for application and torrents
-        appRow = pd.DataFrame({"upload": self.state["alltime_ul"], "download": self.state["alltime_dl"]}, index=(NOW,))
-        torrentRow = pd.DataFrame({k: v["uploaded"] for k, v in self.torrent.items()}, index=(NOW,))
+        app_row = pd.DataFrame(
+            {"upload": self.state["alltime_ul"], "download": self.state["alltime_dl"]}, index=(NOW,)
+        )
+        torrent_row = pd.DataFrame({k: v["uploaded"] for k, v in self.torrent.items()}, index=(NOW,))
 
         # truncate application dataframe and append new row
         try:
-            self.appData = self.appData.truncate(
-                before=NOW - pd.Timedelta(1, unit="hours"),
-                copy=False,
-            ).append(appRow)
-        except (TypeError, AttributeError):
-            self.appData = appRow
+            df = self.appData.truncate(before=NOW - pd.Timedelta(1, unit="hours"), copy=False)
+            last = df.iloc[-1]
+            if last.name >= NOW or (last.values > app_row.values).any():
+                raise ValueError
+        except Exception:
+            self.appData = app_row
+        else:
+            self.appData = df.append(app_row)
 
         # cleanup deleted torrents and append new row
         try:
-            df = self.torrentData
-            delete = df.columns.difference(torrentRow.columns)
+            df = self.torrentData.truncate(before=NOW - pd.Timedelta(1, unit="days"), copy=False)
+            last = df.iloc[-1]
+            if last.name >= NOW or last.gt(torrent_row.iloc[0]).any():
+                raise ValueError
+
+            delete = df.columns.difference(torrent_row.columns)
             if not delete.empty:
                 df.drop(columns=delete, inplace=True, errors="ignore")
                 df.dropna(how="all", inplace=True)
-            self.torrentData = df.truncate(
-                before=NOW - pd.Timedelta(1, unit="days"),
-                copy=False,
-            ).append(torrentRow)
-        except (TypeError, AttributeError):
-            self.torrentData = torrentRow
+        except Exception:
+            self.torrentData = torrent_row
+        else:
+            self.torrentData = df.append(torrent_row)
 
         # select expiration record of current torrents
         try:
             df = self.history
-            df = df.loc[df.index.isin(torrentRow.columns), "expire"]
+            df = df.loc[df.index.isin(torrent_row.columns), "expire"]
             self.expired: pd.Index = df.index[df.values <= NOW]
             if not self.expired.empty:
                 self.history.loc[self.expired, "expire"] = pd.NaT
-        except (TypeError, AttributeError, KeyError):
+        except Exception:
             self.history = pd.DataFrame(columns=("id", "add", "expire"))
             self.expired = self.history.index
 
-    def clean_seedDir(self):
+    def clean_seeddir(self):
         """Clean files in seed dir which does not belong to qb download list."""
 
         try:
-            iterdir = self.seedDir.iterdir()
+            iterdir = self.seed_dir.iterdir()
         except AttributeError:
             return
 
@@ -291,7 +293,7 @@ class qBittorrent:
         print("Last hour avg speed: UL: {}/s, DL: {}/s.".format(*map(humansize, speeds)))
 
         busy = {"checkingUP", "allocating", "checkingDL", "checkingResumeData", "moving"}
-        if not busy.isdisjoint(self.stateCount):
+        if not busy.isdisjoint(self.state_counter):
             return False
 
         if self.freeSpace < 0:
@@ -304,15 +306,17 @@ class qBittorrent:
             self.silence = NOW
 
         return (
-            (speeds < self._speedThresh).all()
+            (speeds < self._speed_thresh).all()
             and not self.state["use_alt_speed_limits"]
-            and not 0 < self.state["up_rate_limit"] < self._speedThresh[0]  # upload
-            and "queuedDL" not in self.stateCount
+            and not 0 < self.state["up_rate_limit"] < self._speed_thresh[0]  # upload
+            and "queuedDL" not in self.state_counter
             or not self.expired.empty
         )
 
     def get_remove_cands(self) -> Iterator[Removable]:
         """Discover the slowest torrents using jenks natural breaks."""
+
+        from jenkspy import jenks_breaks
 
         # calculate avg speed for each torrent
         speeds = self.torrent_speed
@@ -327,7 +331,7 @@ class qBittorrent:
             print("Jenkspy failed:", e)
             breaks = speeds.mean()
 
-        thresh = self._deadThresh
+        thresh = self._dead_thresh
         if breaks < thresh:
             breaks = thresh
 
@@ -380,8 +384,10 @@ class qBittorrent:
 
         if not content:
             return
-
         assert len(downloadList) == len(content), "Lengths of params should match."
+
+        from torrentool.api import Torrent as TorrentParser
+        from torrentool.exceptions import TorrentoolException
 
         if not _debug:
             try:
@@ -433,7 +439,7 @@ class qBittorrent:
     def resume_paused(self):
         """If any torrent is paused, for any reason, resume."""
         paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
-        if not paused.isdisjoint(self.stateCount):
+        if not paused.isdisjoint(self.state_counter):
             print("Resume torrents.")
             if not _debug:
                 self._request("torrents/resume", params={"hashes": "all"})
@@ -449,13 +455,13 @@ class qBittorrent:
         except AttributeError:
             real = self.state["free_space_on_disk"]
             try:
-                f = shutil.disk_usage(self.seedDir).free
+                f = shutil.disk_usage(self.seed_dir).free
             except TypeError:
                 pass
             else:
                 if f > real:
                     real = f
-            f = self._freeSpace = int(real - self._spaceOffset)
+            f = self._freeSpace = int(real - self._space_offset)
             return f
 
     @property
@@ -467,14 +473,10 @@ class qBittorrent:
         df = self.appData
         hi = df.iloc[-1]
         lo = df.iloc[0]
-        s = hi.values - lo.values
         t = (hi.name - lo.name).total_seconds()
-
-        if (s < 0).any() or t <= 0:
-            self.appData = df.iloc[[-1]]
+        if not t:
             return pd.array((None, None), dtype=float).to_numpy()
-
-        return s / t
+        return (hi.values - lo.values) / t
 
     @property
     def torrent_speed(self) -> pd.Series:
@@ -486,18 +488,13 @@ class qBittorrent:
         df = self.torrentData
         hi = df.iloc[-1]
         lo = df.apply(pd.Series.first_valid_index)
-
         try:
             speeds: pd.Series
             speeds = (hi.values - df.lookup(lo, lo.index)) / (hi.name - lo).dt.total_seconds()
             speeds.dropna(inplace=True)
-            if (speeds.values >= 0).all():
-                return speeds
         except AttributeError:
-            pass
-
-        self.torrentData = df.iloc[[-1]]
-        return pd.Series(dtype=float)
+            return pd.Series(dtype=float)
+        return speeds
 
 
 class MTeam:
@@ -654,11 +651,11 @@ class MPSolver:
 
     def solve(self):
 
+        from ortools.sat.python import cp_model
+
         downloadCand = self.downloadCand
         removeCand = self.removeCand
         qb = self.qb
-
-        from ortools.sat.python import cp_model
 
         model = cp_model.CpModel()
         Sum = cp_model.LinearExpr.Sum
@@ -686,7 +683,7 @@ class MPSolver:
             coef = [1] * d
             coef.extend(-(t.state == "downloading") for t in removeCand)
             model.Add(
-                ScalProd(pool, coef) <= maxActive - qb.stateCount["downloading"],
+                ScalProd(pool, coef) <= maxActive - qb.state_counter["downloading"],
             ).OnlyEnforceIf(has_new)
 
         # Maximize: download_peer - removed_peer
@@ -842,13 +839,13 @@ def main():
 
     qb = qBittorrent(
         host=basic["host"],
-        seedDir=basic["seed_dir"] or None,
-        diskQuota=basic.getfloat("disk_quota"),
-        speedThresh=(basic.getint("up_rate_thresh"), basic.getint("dl_rate_thresh")),
-        deadThresh=basic.getint("dead_torrent_up_thresh"),
+        seed_dir=basic["seed_dir"] or None,
+        disk_quota=basic.getfloat("disk_quota"),
+        speed_thresh=(basic.getint("up_rate_thresh"), basic.getint("dl_rate_thresh")),
+        dead_thresh=basic.getint("dead_torrent_up_thresh"),
         datafile=root.joinpath("data"),
     )
-    qb.clean_seedDir()
+    qb.clean_seeddir()
 
     if qb.need_action() or _debug:
 
