@@ -16,7 +16,11 @@ import requests
 _debug: bool = False
 NOW = pd.Timestamp.now()
 byteSize: Mapping[str, int] = {
-    k: v for kk, v in zip(((f"{c}B", f"{c}iB") for c in "KMGTP"), (1024 ** i for i in range(1, 6))) for k in kk
+    k: v
+    for kk, v in zip(
+        ((f"{c}B", f"{c}iB") for c in "KMGTP"), (1024 ** i for i in range(1, 6))
+    )
+    for k in kk
 }
 
 
@@ -134,7 +138,9 @@ class qBittorrent:
 
         values = self.torrent.values()
         self.state_counter = Counter(v["state"] for v in values)
-        self._space_offset = sum(v["amount_left"] for v in values) + disk_quota * byteSize["GiB"]
+        self._space_offset = (
+            sum(v["amount_left"] for v in values) + disk_quota * byteSize["GiB"]
+        )
 
         self._speed_thresh = tuple(v * byteSize["KiB"] for v in speed_thresh)
         self._dead_thresh = dead_thresh * byteSize["KiB"]
@@ -155,13 +161,21 @@ class qBittorrent:
 
         try:
             with self.datafile.open(mode="rb") as f:
-                self.appData, self.torrentData, self.history, self.silence, self.session = pickle.load(f)
+                (
+                    self.appData,
+                    self.torrentData,
+                    self.history,
+                    self.silence,
+                    self.session,
+                ) = pickle.load(f)
 
         except Exception as e:
             if self.datafile.exists():
                 print(f"Reading '{self.datafile}' failed: {e}")
                 if not _debug:
-                    self.datafile.rename(f"{self.datafile}_{NOW.strftime('%y%m%d_%H%M%S')}")
+                    self.datafile.rename(
+                        f"{self.datafile}_{NOW.strftime('%y%m%d_%H%M%S')}"
+                    )
 
             self.appData = self.torrentData = self.history = None
             self.silence = NOW
@@ -175,7 +189,16 @@ class qBittorrent:
 
         try:
             with self.datafile.open("wb") as f:
-                pickle.dump((self.appData, self.torrentData, self.history, self.silence, self.session), f)
+                pickle.dump(
+                    (
+                        self.appData,
+                        self.torrentData,
+                        self.history,
+                        self.silence,
+                        self.session,
+                    ),
+                    f,
+                )
 
         except (OSError, pickle.PickleError) as e:
             msg = f"Writing data to disk failed: {e}"
@@ -184,12 +207,18 @@ class qBittorrent:
 
     def init_session(self):
         """Instantiate a new requests session."""
+        from requests.adapters import HTTPAdapter
 
-        self.session = requests.Session()
-        self.session.headers.update(
-            {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) Gecko/20100101 Firefox/80.0"}
+        session = self.session = requests.Session()
+        session.headers.update(
+            {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) Gecko/20100101 Firefox/80.0"
+            }
         )
-        return self.session
+        adapter = HTTPAdapter(max_retries=5)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session
 
     def _record(self):
         """Record qBittorrent traffic info to pandas DataFrame."""
@@ -206,7 +235,9 @@ class qBittorrent:
 
         # qBittorrent overall ul/dl speeds
         try:
-            df = self.appData.truncate(before=NOW - pd.Timedelta(1, unit="hours"), copy=False)
+            df = self.appData.truncate(
+                before=NOW - pd.Timedelta(1, unit="hours"), copy=False
+            )
 
             last = df.iloc[-1]
             if last.name >= NOW or (last.values > app_row.values).any():
@@ -218,7 +249,9 @@ class qBittorrent:
 
         # upload speeds of each torrent
         try:
-            df = self.torrentData.truncate(before=NOW - pd.Timedelta(1, unit="days"), copy=False)
+            df = self.torrentData.truncate(
+                before=NOW - pd.Timedelta(1, unit="days"), copy=False
+            )
 
             delete = df.columns.difference(torrent_row.columns)
             if not delete.empty:
@@ -297,9 +330,17 @@ class qBittorrent:
         """
 
         speeds = self.speeds
-        print("Last hour avg speed: UL: {}/s, DL: {}/s.".format(*map(humansize, speeds)))
+        print(
+            "Last hour avg speed: UL: {}/s, DL: {}/s.".format(*map(humansize, speeds))
+        )
 
-        busy = {"checkingUP", "allocating", "checkingDL", "checkingResumeData", "moving"}
+        busy = {
+            "checkingUP",
+            "allocating",
+            "checkingDL",
+            "checkingResumeData",
+            "moving",
+        }
         if not busy.isdisjoint(self.state_counter):
             return False
 
@@ -345,7 +386,9 @@ class qBittorrent:
         removes = speeds[speeds.values <= breaks]
         if not self.expired.empty:
             removes = removes.to_dict()
-            removes.update({k: None for k in self.expired if self.torrent[k]["progress"] != 1})
+            removes.update(
+                {k: None for k in self.expired if self.torrent[k]["progress"] != 1}
+            )
 
         # exclude those added in less than 1 day
         yesterday = pd.Timestamp.now(tz="UTC").timestamp() - 86400
@@ -381,12 +424,17 @@ class qBittorrent:
 
         self._request(
             "torrents/delete",
-            params={"hashes": "|".join(t.hash for t in removeList), "deleteFiles": True},
+            params={
+                "hashes": "|".join(t.hash for t in removeList),
+                "deleteFiles": True,
+            },
         )
         for t in removeList:
             logger.record("Remove", t.size, t.title)
 
-    def add_torrent(self, downloadList: Sequence[Torrent], content: Mapping[str, bytes]):
+    def add_torrent(
+        self, downloadList: Sequence[Torrent], content: Mapping[str, bytes]
+    ):
         """Upload torrents to qBittorrents and record information."""
 
         if not content:
@@ -423,7 +471,9 @@ class qBittorrent:
 
         # cleanup outdated records (older than 30 days and not in app)
         df = self.history
-        df = df[df.index.isin(self.torrentData.columns) | (df["add"].values > NOW - pd.Timedelta(30, unit="days"))]
+        i = df.index.isin(self.torrentData.columns)
+        j = df["add"].values > NOW - pd.Timedelta(30, unit="days")
+        df = df.loc[i | j]
 
         # save new info to dataframe
         self.history = df.append(
@@ -439,9 +489,10 @@ class qBittorrent:
 
     def get_preference(self, key: str):
         """Query qBittorrent preferences by key."""
-        if not hasattr(self, "_preferences"):
-            self._preferences = self._request("app/preferences").json()
-        return self._preferences[key]
+        p = getattr(self, "_preferences", None)
+        if p is None:
+            p = self._preferences = self._request("app/preferences").json()
+        return p[key]
 
     def resume_paused(self):
         """If any torrent is paused, for any reason, resume."""
@@ -497,7 +548,9 @@ class qBittorrent:
         lo = df.apply(pd.Series.first_valid_index)
         try:
             speeds: pd.Series
-            speeds = (hi.values - df.lookup(lo, lo.index)) / (hi.name - lo).dt.total_seconds()
+            speeds = (hi.values - df.lookup(lo, lo.index)) / (
+                hi.name - lo
+            ).dt.total_seconds()
             speeds.dropna(inplace=True)
         except AttributeError:
             return pd.Series(dtype=float)
@@ -514,9 +567,16 @@ class MTeam:
         Where (A, B) is defined in config file and passed via `minPeer`.
     """
 
-    domain = "https://pt.m-team.cc/"
+    DOMAIN = "https://pt.m-team.cc/"
 
-    def __init__(self, *, feeds: Iterable[str], account: Tuple[str, str], minPeer: Tuple[float, int], qb: qBittorrent):
+    def __init__(
+        self,
+        *,
+        feeds: Iterable[str],
+        account: Tuple[str, str],
+        minPeer: Tuple[float, int],
+        qb: qBittorrent,
+    ):
 
         self.feeds = feeds
         self.account = account
@@ -526,25 +586,36 @@ class MTeam:
 
     def _get(self, path: str):
 
-        url = urljoin(self.domain, path)
-        for retry in range(3):
-            try:
-                response = self.session.get(url, timeout=(7, 28))
-                response.raise_for_status()
-                if "/login.php" not in response.url:
-                    return response
-                if retry < 2:
-                    self.session.post(
-                        url=self.domain + "takelogin.php",
-                        data={"username": self.account[0], "password": self.account[1]},
-                        headers={"referer": self.domain + "login.php"},
-                    )
-                else:
-                    print("Login failed.")
-            except (requests.ConnectionError, requests.HTTPError, requests.Timeout) as e:
-                print("Connection error:", e)
-            except (requests.RequestException, AttributeError, TypeError):
-                self.session = self.qb.init_session()
+        try:
+            response = self.session.get(urljoin(self.DOMAIN, path), timeout=(7, 28))
+            response.raise_for_status()
+        except (requests.ConnectionError, requests.HTTPError, requests.Timeout) as e:
+            print("Connection error:", e)
+            return
+        except (requests.RequestException, AttributeError):
+            self.session = self.qb.init_session()
+        else:
+            if "/login.php" not in response.url:
+                return response
+
+        if hasattr(self, "_login"):
+            return
+
+        print("Logging in..", end="", flush=True)
+        try:
+            response = self.session.post(
+                url=self.DOMAIN + "takelogin.php",
+                data={"username": self.account[0], "password": self.account[1]},
+                headers={"referer": self.DOMAIN + "login.php"},
+            )
+            response.raise_for_status()
+        except requests.RequestException:
+            print("failed.")
+            return
+        else:
+            print("ok.")
+            self._login = True
+            return self._get(path)
 
     def fetch(self) -> Iterator[Torrent]:
 
@@ -555,7 +626,9 @@ class MTeam:
         visited = set(self.qb.history["id"])
         transTable = str.maketrans({"日": "D", "時": "H", "分": "T"})
         sub_nondigit = re_compile(r"[^0-9]+").sub
-        search_size = re_compile(r"(?P<num>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)").search
+        search_size = re_compile(
+            r"(?P<num>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)"
+        ).search
         search_id = re_compile(r"\bid=(?P<id>[0-9]+)").search
 
         re_download = re_compile(r"\bdownload\.php\?")
@@ -567,7 +640,10 @@ class MTeam:
         for feed in self.feeds:
             try:
                 soup = BeautifulSoup(self._get(feed).content, "lxml")
-                soup = (tr.find_all("td", recursive=False) for tr in soup.select("#form_torrent table.torrents > tr"))
+                soup = (
+                    tr.find_all("td", recursive=False)
+                    for tr in soup.select("#form_torrent table.torrents > tr")
+                )
                 row = next(soup)
             except AttributeError:
                 print("Fetching failed:", feed)
@@ -609,14 +685,25 @@ class MTeam:
                         expire = expire.partition("：")[2].translate(transTable)
 
                     title = row[colTitle].find("a", href=re_details, string=True)
-                    title = title["title"] if title.has_attr("title") else title.get_text(strip=True)
+                    title = (
+                        title["title"]
+                        if title.has_attr("title")
+                        else title.get_text(strip=True)
+                    )
 
                 except Exception as e:
                     print("Parsing page error:", e)
                     continue
 
                 visited.add(tid)
-                yield Torrent(id=tid, size=size, peer=peer, link=link, expire=expire, title=title)
+                yield Torrent(
+                    id=tid,
+                    size=size,
+                    peer=peer,
+                    link=link,
+                    expire=expire,
+                    title=title,
+                )
 
     def download(self, downloadList: Sequence[Torrent]):
         """Download torrents from mteam."""
@@ -648,7 +735,13 @@ class MPSolver:
     -   Maximize: `download_peer` - `removed_peer`
     """
 
-    def __init__(self, *, removeCand: Iterable[Removable], downloadCand: Iterable[Torrent], qb: qBittorrent):
+    def __init__(
+        self,
+        *,
+        removeCand: Iterable[Removable],
+        downloadCand: Iterable[Torrent],
+        qb: qBittorrent,
+    ):
 
         self.downloadList = self.removeList = ()
         self.downloadCand = tuple(downloadCand)
@@ -696,7 +789,9 @@ class MPSolver:
         # Maximize: download_peer - removed_peer
         factor = sum(t.peer for t in removeCand if t.weight == 1) + 1
         coef = [t.peer * factor for t in downloadCand]
-        coef.extend(-t.peer * (factor if t.weight is None else t.weight) for t in removeCand)
+        coef.extend(
+            -t.peer * (factor if t.weight is None else t.weight) for t in removeCand
+        )
         model.Maximize(ScalProd(pool, coef))
 
         solver = cp_model.CpSolver()
@@ -754,11 +849,17 @@ class MPSolver:
 
         print(sepSlim)
         if isinstance(self.status, dict):
-            print("Solution: {status}. Walltime: {walltime:.5f}s. Objective value: {value}.".format_map(self.status))
+            print(
+                "Solution: {status}. Walltime: {walltime:.5f}s. Objective value: {value}.".format_map(
+                    self.status
+                )
+            )
         else:
             print("CP-SAT solver cannot find an solution. Status:", self.status)
 
-        print(f"Free space after operation: {humansize(freeSpace)} => {humansize(finalFreeSpace)}.")
+        print(
+            f"Free space after operation: {humansize(freeSpace)} => {humansize(finalFreeSpace)}."
+        )
 
         for prefix in "remove", "download":
             final = getattr(self, prefix + "List")
