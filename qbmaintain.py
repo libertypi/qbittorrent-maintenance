@@ -1,11 +1,11 @@
 import pickle
+import re
 import shutil
 import sys
 from collections import Counter
 from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
-from re import compile as re_compile
 from typing import Iterable, Iterator, Mapping, Sequence, Tuple
 from urllib.parse import urljoin
 
@@ -15,10 +15,11 @@ import requests
 
 _debug: bool = False
 NOW = pd.Timestamp.now()
-byteSize: Mapping[str, int] = {
-    k: v for kk, v in zip((
-        (f"{c}B", f"{c}iB") for c in "KMGTP"), (1024**i for i in range(1, 6)))
-    for k in kk
+BYTESIZE: Mapping[str, int] = {
+    k: v for kk, v in zip(
+        ((f"{c}B", f"{c}iB") for c in "KMGTP"),
+        (1024**i for i in range(1, 6)),
+    ) for k in kk
 }
 
 
@@ -59,24 +60,25 @@ class Logger:
         return "{:17}    {:8}    {:>11}    {}\n{:->80}\n{}".format(
             "Date", "Action", "Size", "Name", "", "".join(reversed(self._log)))
 
+    def __bool__(self):
+        return not not self._log
+
     def record(self, action: str, size: int, name: str):
         """Record a line of log."""
 
-        self._log.append(
-            "{:17}    {:8}    {:>11}    {}\n".format(
-                pd.Timestamp.now().strftime("%D %T"),
-                action,
-                humansize(size),
-                name,
-            ),)
+        self._log.append("{:17}    {:8}    {:>11}    {}\n".format(
+            pd.Timestamp.now().strftime("%D %T"),
+            action,
+            humansize(size),
+            name,
+        ))
 
     def write(self, logfile: Path, copy_to: str = None):
         """Insert logs to the beginning of a logfile.
 
         If `copy_to` is a dir, logfile will be copied to that directory.
         """
-
-        if not self._log or _debug:
+        if _debug:
             return
 
         try:
@@ -104,11 +106,14 @@ class Logger:
 class qBittorrent:
     """The manager class for communicating with qBittorrent and data persistence."""
 
+    state: dict
+    torrent: dict
     appData: pd.DataFrame
     torrentData: pd.DataFrame
     history: pd.DataFrame
     silence: pd.Timestamp
     session: requests.Session
+    expired: pd.Index
 
     def __init__(
         self,
@@ -123,8 +128,8 @@ class qBittorrent:
 
         self._api_base = urljoin(host, "api/v2/")
         maindata = self._request("sync/maindata").json()
-        self.state: dict = maindata["server_state"]
-        self.torrent: dict = maindata["torrents"]
+        self.state = maindata["server_state"]
+        self.torrent = maindata["torrents"]
         if self.state["connection_status"] not in ("connected", "firewalled"):
             raise RuntimeError("qBittorrent is not connected to the internet.")
 
@@ -136,10 +141,10 @@ class qBittorrent:
         values = self.torrent.values()
         self.state_counter = Counter(v["state"] for v in values)
         self._space_offset = (sum(v["amount_left"] for v in values) +
-                              disk_quota * byteSize["GiB"])
+                              disk_quota * BYTESIZE["GiB"])
 
-        self._speed_thresh = tuple(v * byteSize["KiB"] for v in speed_thresh)
-        self._dead_thresh = dead_thresh * byteSize["KiB"]
+        self._speed_thresh = tuple(v * BYTESIZE["KiB"] for v in speed_thresh)
+        self._dead_thresh = dead_thresh * BYTESIZE["KiB"]
         self.datafile = datafile if isinstance(datafile,
                                                Path) else Path(datafile)
         self._freeSpace = self._preferences = None
@@ -161,7 +166,7 @@ class qBittorrent:
         """Load data objects from pickle."""
 
         try:
-            with self.datafile.open(mode="rb") as f:
+            with open(self.datafile, mode="rb") as f:
                 (
                     self.appData,
                     self.torrentData,
@@ -170,7 +175,8 @@ class qBittorrent:
                     self.session,
                 ) = pickle.load(f)
 
-        except Exception as e:
+        except (OSError, pickle.PickleError) as e:
+
             if self.datafile.exists():
                 print(f"Reading '{self.datafile}' failed: {e}")
                 if not _debug:
@@ -186,9 +192,8 @@ class qBittorrent:
 
         if _debug:
             return
-
         try:
-            with self.datafile.open("wb") as f:
+            with open(self.datafile, "wb") as f:
                 pickle.dump((
                     self.appData,
                     self.torrentData,
@@ -234,36 +239,34 @@ class qBittorrent:
 
         # qBittorrent overall ul/dl speeds
         try:
-            df = self.appData.truncate(
-                before=NOW - pd.Timedelta(1, unit="hours"),
-                copy=False,
-            )
-
+            df = self.appData
             last = df.iloc[-1]
             if last.name >= NOW or (last.values > app_row.values).any():
                 raise ValueError
 
-            self.appData = df.append(app_row)
+            self.appData = df.truncate(
+                before=NOW - pd.Timedelta(1, unit="hours"),
+                copy=False,
+            ).append(app_row)
         except Exception:
             self.appData = app_row
 
         # upload speeds of each torrent
         try:
-            df = self.torrentData.truncate(
-                before=NOW - pd.Timedelta(1, unit="days"),
-                copy=False,
-            )
+            df = self.torrentData
+            last = df.iloc[-1]
+            if last.name >= NOW or last.gt(torrent_row.iloc[0]).any():
+                raise ValueError
 
             delete = df.columns.difference(torrent_row.columns)
             if not delete.empty:
                 df.drop(columns=delete, inplace=True, errors="ignore")
                 df.dropna(how="all", inplace=True)
 
-            last = df.iloc[-1]
-            if last.name >= NOW or last.gt(torrent_row.iloc[0]).any():
-                raise ValueError
-
-            self.torrentData = df.append(torrent_row)
+            self.torrentData = df.truncate(
+                before=NOW - pd.Timedelta(1, unit="days"),
+                copy=False,
+            ).append(torrent_row)
         except Exception:
             self.torrentData = torrent_row
 
@@ -272,7 +275,7 @@ class qBittorrent:
             df = self.history
             df = df.loc[df.index.isin(torrent_row.columns), "expire"]
 
-            self.expired: pd.Index = df.index[df.values <= NOW]
+            self.expired = df.index[df.values <= NOW]
             if not self.expired.empty:
                 self.history.loc[self.expired, "expire"] = pd.NaT
         except Exception:
@@ -328,11 +331,8 @@ class qBittorrent:
             *map(humansize, speeds)))
 
         busy = {
-            "checkingUP",
-            "allocating",
-            "checkingDL",
-            "checkingResumeData",
-            "moving",
+            "checkingUP", "allocating", "checkingDL", "checkingResumeData",
+            "moving"
         }
         if not busy.isdisjoint(self.state_counter):
             return False
@@ -347,10 +347,9 @@ class qBittorrent:
             self.silence = NOW
 
         return ((speeds < self._speed_thresh).all() and
-                not self.state["use_alt_speed_limits"] and not 0 <
-                self.state["up_rate_limit"] < self._speed_thresh[0]  # upload
-                and "queuedDL" not in self.state_counter or
-                not self.expired.empty)
+                not self.state["use_alt_speed_limits"] and
+                not 0 < self.state["up_rate_limit"] < self._speed_thresh[0] and
+                "queuedDL" not in self.state_counter or not self.expired.empty)
 
     def get_remove_cands(self) -> Iterator[Removable]:
         """Discover the slowest torrents using jenks natural breaks."""
@@ -415,13 +414,11 @@ class qBittorrent:
         if not removeList or _debug:
             return
 
-        self._request(
-            "torrents/delete",
-            params={
-                "hashes": "|".join(t.hash for t in removeList),
-                "deleteFiles": True,
-            },
-        )
+        self._request("torrents/delete",
+                      params={
+                          "hashes": "|".join(t.hash for t in removeList),
+                          "deleteFiles": True,
+                      })
         for t in removeList:
             logger.record("Remove", t.size, t.title)
 
@@ -464,9 +461,8 @@ class qBittorrent:
 
         # cleanup outdated records (older than 30 days and not in app)
         df = self.history
-        i = df.index.isin(self.torrentData.columns)
-        j = df["add"].values > NOW - pd.Timedelta(30, unit="days")
-        df = df.loc[i | j]
+        df = df[df.index.isin(self.torrentData.columns) |
+                (df["add"].values > NOW - pd.Timedelta(30, unit="days"))]
 
         # save new info to dataframe
         self.history = df.append(
@@ -559,18 +555,12 @@ class MTeam:
 
     DOMAIN = "https://pt.m-team.cc/"
 
-    def __init__(
-        self,
-        *,
-        feeds: Iterable[str],
-        account: Tuple[str, str],
-        minPeer: Tuple[float, int],
-        qb: qBittorrent,
-    ):
+    def __init__(self, *, feeds: Sequence[str], username: str, password: str,
+                 minPeer: Tuple[float, int], qb: qBittorrent):
 
         self.feeds = feeds
-        self.account = account
-        self.minPeer = minPeer[0] / byteSize["GiB"], minPeer[1]
+        self._account = {"username": username, "password": password}
+        self.minPeer = minPeer[0] / BYTESIZE["GiB"], minPeer[1]
         self.qb = qb
         self.session = qb.session
 
@@ -597,10 +587,7 @@ class MTeam:
         try:
             response = self.session.post(
                 url=self.DOMAIN + "takelogin.php",
-                data={
-                    "username": self.account[0],
-                    "password": self.account[1]
-                },
+                data=self._account,
                 headers={"referer": self.DOMAIN + "login.php"},
             )
             response.raise_for_status()
@@ -620,23 +607,22 @@ class MTeam:
         A, B = self.minPeer
         visited = set(self.qb.history["id"])
         transTable = str.maketrans({"日": "D", "時": "H", "分": "T"})
-        sub_nondigit = re_compile(r"[^0-9]+").sub
-        search_size = re_compile(
+        sub_nondigit = re.compile(r"[^0-9]+").sub
+        search_size = re.compile(
             r"(?P<num>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)").search
-        search_id = re_compile(r"\bid=(?P<id>[0-9]+)").search
 
-        re_download = re_compile(r"\bdownload\.php\?")
-        re_details = re_compile(r"\bdetails\.php\?")
-        re_timelimit = re_compile(r"^\s*限時：")
+        re_download = re.compile(r"\bdownload\.php\?")
+        re_details = re.compile(r"\bdetails\.php\?")
+        re_timelimit = re.compile(r"^\s*限時：")
 
         print(f"Connecting to M-Team... Pages: {len(self.feeds)}.")
 
         for feed in self.feeds:
             try:
-                soup = BeautifulSoup(self._get(feed).content, "lxml")
                 soup = (
                     tr.find_all("td", recursive=False)
-                    for tr in soup.select("#form_torrent table.torrents > tr"))
+                    for tr in BeautifulSoup(self._get(feed).content, "lxml").
+                    select("#form_torrent table.torrents > tr"))
                 row = next(soup)
             except AttributeError:
                 print("Fetching failed:", feed)
@@ -649,40 +635,39 @@ class MTeam:
 
             for i, td in enumerate(row):
                 title = td.find(title=True)
-                title = title["title"] if title else td.get_text(strip=True)
+                title = title["title"].strip() if title else td.get_text(
+                    strip=True)
                 cols[title] = i
 
-            colTitle = cols.pop("標題", 1)
-            colSize = cols.pop("大小", 4)
-            colUp = cols.pop("種子數", 5)
-            colDown = cols.pop("下載數", 6)
-            colProg = cols.pop("進度", 8)
+            c_title = cols.pop("標題", 1)
+            c_size = cols.pop("大小", 4)
+            c_up = cols.pop("種子數", 5)
+            c_down = cols.pop("下載數", 6)
+            c_prog = cols.pop("進度", 8)
 
             for row in soup:
                 try:
-                    peer = int(sub_nondigit("", row[colDown].get_text()))
-                    size = search_size(row[colSize].get_text())
-                    size = int(float(size["num"]) * byteSize[size["unit"]])
-                    if peer < A * size + B or "peer-active" in row[colProg][
-                            "class"]:
+                    peer = int(sub_nondigit("", row[c_down].get_text()))
+                    size = search_size(row[c_size].get_text())
+                    size = int(float(size["num"]) * BYTESIZE[size["unit"]])
+                    if (peer < A * size + B or
+                            "peer-active" in row[c_prog]["class"] or
+                            not int(sub_nondigit("", row[c_up].get_text()))):
                         continue
 
-                    link = row[colTitle].find("a", href=re_download)["href"]
-                    tid = search_id(link)["id"]
-                    if tid in visited or row[colUp].get_text(strip=True) == "0":
+                    link = row[c_title].find("a", href=re_download)["href"]
+                    tid = re.search(r"\bid=([0-9]+)", link)[1]
+                    if tid in visited:
                         continue
 
-                    expire = row[colTitle].find(string=re_timelimit)
+                    expire = row[c_title].find(string=re_timelimit)
                     if expire:
                         if "日" not in expire:
                             continue
                         expire = expire.partition("：")[2].translate(transTable)
 
-                    title = row[colTitle].find("a",
-                                               href=re_details,
-                                               string=True)
-                    title = (title["title"] if title.has_attr("title") else
-                             title.get_text(strip=True))
+                    title = row[c_title].find("a", href=re_details, string=True)
+                    title = title.get("title") or title.get_text(strip=True)
 
                 except Exception as e:
                     print("Parsing page error:", e)
@@ -728,13 +713,8 @@ class MPSolver:
     -   Maximize: `download_peer` - `removed_peer`
     """
 
-    def __init__(
-        self,
-        *,
-        removeCand: Iterable[Removable],
-        downloadCand: Iterable[Torrent],
-        qb: qBittorrent,
-    ):
+    def __init__(self, *, removeCand: Iterable[Removable],
+                 downloadCand: Iterable[Torrent], qb: qBittorrent):
 
         self.downloadList = self.removeList = ()
         self.downloadCand = tuple(downloadCand)
@@ -810,10 +790,10 @@ class MPSolver:
             return
 
         sepSlim = "-" * 50
-        removeCandSize = sum(t.size for t in self.removeCand)
-        downloadCandSize = sum(t.size for t in self.downloadCand)
-        removeSize = sum(t.size for t in self.removeList)
-        downloadSize = sum(t.size for t in self.downloadList)
+        removeCandSize = self._sumsize(self.removeCand)
+        downloadCandSize = self._sumsize(self.downloadCand)
+        removeSize = self._sumsize(self.removeList)
+        downloadSize = self._sumsize(self.downloadList)
         freeSpace = self.qb.freeSpace
         finalFreeSpace = freeSpace + removeSize - downloadSize
 
@@ -842,9 +822,8 @@ class MPSolver:
         else:
             print("CP-SAT solver cannot find an solution. Status:", self.status)
 
-        print(
-            f"Free space after operation: {humansize(freeSpace)} => {humansize(finalFreeSpace)}."
-        )
+        print("Free space after operation: {} => {}.".format(
+            humansize(freeSpace), humansize(finalFreeSpace)))
 
         for prefix in "remove", "download":
             final = getattr(self, prefix + "List")
@@ -860,6 +839,10 @@ class MPSolver:
             ))
             for t in final:
                 print(f"[{humansize(t.size):>11}|{t.peer:4d}P] {t.title}")
+
+    @staticmethod
+    def _sumsize(obj: Iterable[Torrent]) -> int:
+        return sum(t.size for t in obj)
 
 
 def humansize(size: int) -> str:
@@ -879,25 +862,10 @@ def read_config(configfile: Path):
     """Read or create config file."""
 
     global _debug
+
     parser = ConfigParser()
-
-    if parser.read(configfile, encoding="utf-8"):
-
-        basic = parser["DEFAULT"]
-
-        for arg in sys.argv[1:]:
-            if arg == "-d":
-                _debug = True
-            elif arg == "-r":
-                _debug = True
-                basic = parser["OVERRIDE"]
-            else:
-                raise ValueError(f"Unrecognized argument: '{arg}'")
-
-        return basic, parser["MTEAM"]
-
     parser["DEFAULT"] = {
-        "host": "http://localhost",
+        "host": "http://localhost/",
         "seed_dir": "",
         "disk_quota": "50",
         "up_rate_thresh": "2700",
@@ -906,16 +874,32 @@ def read_config(configfile: Path):
         "log_backup_dir": "",
     }
     parser["MTEAM"] = {
-        "account": "",
+        "username": "",
         "password": "",
         "peer_slope": "0.3",
         "peer_intercept": "30",
-        "feeds": "\nexample1.php\nexample2.php",
+        "feeds": "example1.php\nexample2.php",
     }
-    parser["OVERRIDE"] = {
+    parser["DEBUG"] = {
         "host": "http://localhost",
         "seed_dir": "",
     }
+
+    if parser.read(configfile, encoding="utf-8"):
+
+        basic = parser["DEFAULT"]
+
+        for arg in sys.argv[1:]:
+            if arg.startswith("-d"):
+                _debug = True
+            elif arg.startswith("-r"):
+                _debug = True
+                basic = parser["DEBUG"]
+            else:
+                raise ValueError(f"Unrecognized argument: '{arg}'")
+
+        return basic, parser["MTEAM"]
+
     with open(configfile, "w", encoding="utf-8") as f:
         parser.write(f)
 
@@ -925,8 +909,8 @@ def read_config(configfile: Path):
 
 def main():
 
-    root = Path(__file__).parent
-    basic, mt = read_config(root.joinpath("config.ini"))
+    join_root = Path(__file__).with_name
+    basic, mt = read_config(join_root("config.ini"))
 
     qb = qBittorrent(
         host=basic["host"],
@@ -935,7 +919,7 @@ def main():
         speed_thresh=(basic.getint("up_rate_thresh"),
                       basic.getint("dl_rate_thresh")),
         dead_thresh=basic.getint("dead_torrent_up_thresh"),
-        datafile=root.joinpath("data"),
+        datafile=join_root("data"),
     )
     qb.clean_seeddir()
 
@@ -943,7 +927,8 @@ def main():
 
         mteam = MTeam(
             feeds=mt["feeds"].split(),
-            account=(mt["account"], mt["password"]),
+            username=mt["username"],
+            password=mt["password"],
             minPeer=(mt.getfloat("peer_slope"), mt.getint("peer_intercept")),
             qb=qb,
         )
@@ -961,10 +946,12 @@ def main():
 
     qb.resume_paused()
     qb.dump_data()
-    logger.write(
-        root.joinpath("logfile.log"),
-        copy_to=basic["log_backup_dir"] or None,
-    )
+
+    if logger:
+        logger.write(
+            join_root("logfile.log"),
+            copy_to=basic["log_backup_dir"],
+        )
 
 
 logger = Logger()
