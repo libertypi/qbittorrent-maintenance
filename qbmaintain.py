@@ -6,7 +6,7 @@ from collections import Counter
 from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Mapping, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, Sequence, Tuple
 from urllib.parse import urljoin
 
 # Beautifulsoup, ortools, jenkspy, torrentool are imported as needed
@@ -15,7 +15,7 @@ import requests
 
 _debug: bool = False
 NOW = pd.Timestamp.now()
-BYTESIZE: Mapping[str, int] = {
+BYTESIZE: Dict[str, int] = {
     k: v for kk, v in zip(
         ((f"{c}B", f"{c}iB") for c in "KMGTP"),
         (1024**i for i in range(1, 6)),
@@ -95,19 +95,16 @@ class Logger:
             with open(logfile, mode="w", encoding="utf-8") as f:
                 f.write(self.__str__())
 
-        try:
-            shutil.copy(logfile, Path(copy_to))
-        except TypeError:
-            pass
-        except OSError as e:
-            print("Copying log failed:", e)
+        if copy_to:
+            try:
+                shutil.copy(logfile, copy_to)
+            except OSError as e:
+                print("Copying log failed:", e)
 
 
 class qBittorrent:
     """The manager class for communicating with qBittorrent and data persistence."""
 
-    state: dict
-    torrent: dict
     appData: pd.DataFrame
     torrentData: pd.DataFrame
     history: pd.DataFrame
@@ -126,27 +123,26 @@ class qBittorrent:
         datafile: Path,
     ):
 
-        self._api_base = urljoin(host, "api/v2/")
-        maindata = self._request("sync/maindata").json()
-        self.state = maindata["server_state"]
-        self.torrent = maindata["torrents"]
-        if self.state["connection_status"] not in ("connected", "firewalled"):
-            raise RuntimeError("qBittorrent is not connected to the internet.")
+        self.seed_dir = Path(seed_dir) if seed_dir else None
+        self.datafile = (datafile
+                         if isinstance(datafile, Path) else Path(datafile))
 
-        try:
-            self.seed_dir = Path(seed_dir)
-        except TypeError:
-            self.seed_dir = None
-
-        values = self.torrent.values()
-        self.state_counter = Counter(v["state"] for v in values)
-        self._space_offset = (sum(v["amount_left"] for v in values) +
-                              disk_quota * BYTESIZE["GiB"])
-
-        self._speed_thresh = tuple(v * BYTESIZE["KiB"] for v in speed_thresh)
+        self._speed_thresh = (speed_thresh[0] * BYTESIZE["KiB"],
+                              speed_thresh[1] * BYTESIZE["KiB"])
         self._dead_thresh = dead_thresh * BYTESIZE["KiB"]
-        self.datafile = datafile if isinstance(datafile,
-                                               Path) else Path(datafile)
+
+        self._api_base = urljoin(host, "api/v2/")
+        maindata: Dict[str, dict] = self._request("sync/maindata").json()
+
+        self.server_state = d = maindata["server_state"]
+        if d["connection_status"] not in ("connected", "firewalled"):
+            print("qBittorrent is not connected to the internet.")
+            sys.exit()
+
+        self.torrents = d = maindata["torrents"]
+        self.state_counter = Counter(v["state"] for v in d.values())
+        self._space_offset = (sum(v["amount_left"] for v in d.values()) +
+                              disk_quota * BYTESIZE["GiB"])
         self._freeSpace = self._preferences = None
 
         self._load_data()
@@ -227,13 +223,13 @@ class qBittorrent:
         # new rows for application and torrents
         app_row = pd.DataFrame(
             {
-                "upload": self.state["alltime_ul"],
-                "download": self.state["alltime_dl"]
+                "upload": self.server_state["alltime_ul"],
+                "download": self.server_state["alltime_dl"]
             },
             index=(NOW,),
         )
         torrent_row = pd.DataFrame(
-            {k: v["uploaded"] for k, v in self.torrent.items()},
+            {k: v["uploaded"] for k, v in self.torrents.items()},
             index=(NOW,),
         )
 
@@ -290,7 +286,7 @@ class qBittorrent:
         except AttributeError:
             return
 
-        names = {v["name"] for v in self.torrent.values()}
+        names = {v["name"] for v in self.torrents.values()}
         for path in iterdir:
             if path.name not in names:
                 if path.suffix == ".!qB" and path.stem in names:
@@ -346,10 +342,11 @@ class qBittorrent:
         except TypeError:
             self.silence = NOW
 
-        return ((speeds < self._speed_thresh).all() and
-                not self.state["use_alt_speed_limits"] and
-                not 0 < self.state["up_rate_limit"] < self._speed_thresh[0] and
-                "queuedDL" not in self.state_counter or not self.expired.empty)
+        return (
+            (speeds < self._speed_thresh).all() and
+            not self.server_state["use_alt_speed_limits"] and
+            not 0 < self.server_state["up_rate_limit"] < self._speed_thresh[0]
+            and "queuedDL" not in self.state_counter or not self.expired.empty)
 
     def get_remove_cands(self) -> Iterator[Removable]:
         """Discover the slowest torrents using jenks natural breaks."""
@@ -379,7 +376,7 @@ class qBittorrent:
             removes.update({
                 k: None
                 for k in self.expired
-                if self.torrent[k]["progress"] != 1
+                if self.torrents[k]["progress"] != 1
             })
 
         # exclude those added in less than 1 day
@@ -390,7 +387,7 @@ class qBittorrent:
         # speed <= deadThresh: 1 (minimum value to be considered)
         # expired when still downloading: 0 (delete unconditionally)
         for k, v in removes.items():
-            t = self.torrent[k]
+            t = self.torrents[k]
             if v is None:
                 v = 0
             elif t["added_on"] > yesterday:
@@ -423,7 +420,7 @@ class qBittorrent:
             logger.record("Remove", t.size, t.title)
 
     def add_torrent(self, downloadList: Sequence[Torrent],
-                    content: Mapping[str, bytes]):
+                    content: Dict[str, bytes]):
         """Upload torrents to qBittorrents and record information."""
 
         if not content:
@@ -498,7 +495,7 @@ class qBittorrent:
         """
         f = self._freeSpace
         if f is None:
-            real = self.state["free_space_on_disk"]
+            real = self.server_state["free_space_on_disk"]
             try:
                 f = shutil.disk_usage(self.seed_dir).free
             except TypeError:
@@ -808,7 +805,7 @@ class MPSolver:
         ))
         print("Remove candidates: {}/{}. Total: {}.".format(
             len(self.removeCand),
-            len(self.qb.torrent),
+            len(self.qb.torrents),
             humansize(removeCandSize),
         ))
         for t in self.removeCand:
@@ -914,7 +911,7 @@ def main():
 
     qb = qBittorrent(
         host=basic["host"],
-        seed_dir=basic["seed_dir"] or None,
+        seed_dir=basic["seed_dir"],
         disk_quota=basic.getfloat("disk_quota"),
         speed_thresh=(basic.getint("up_rate_thresh"),
                       basic.getint("dl_rate_thresh")),
