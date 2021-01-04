@@ -6,6 +6,7 @@ import sys
 from collections import Counter
 from configparser import ConfigParser
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, Sequence, Tuple
 from urllib.parse import urljoin
@@ -15,7 +16,9 @@ import pandas as pd
 import requests
 
 _debug: bool = False
+
 NOW = pd.Timestamp.now()
+
 BYTESIZE: Dict[str, int] = {
     k: v for kk, v in zip(
         ((f"{c}B", f"{c}iB") for c in "KMGTP"),
@@ -246,7 +249,7 @@ class qBittorrent:
                 raise ValueError
 
             self.appData = df.truncate(
-                before=NOW - pd.Timedelta(1, unit="hours"),
+                before=NOW - timedelta(hours=1),
                 copy=False,
             ).append(app_row)
 
@@ -266,7 +269,7 @@ class qBittorrent:
                 df.dropna(how="all", inplace=True)
 
             self.torrentData = df.truncate(
-                before=NOW - pd.Timedelta(1, unit="days"),
+                before=NOW - timedelta(days=1),
                 copy=False,
             ).append(torrent_row)
 
@@ -456,7 +459,6 @@ class qBittorrent:
                 t.expire = NOW + pd.Timedelta(t.expire)
             except ValueError:
                 t.expire = pd.NaT
-
             try:
                 torrent = TorrentParser.from_string(content[t.id])
                 t.hash = torrent.info_hash
@@ -470,7 +472,7 @@ class qBittorrent:
         # cleanup outdated records (older than 30 days and not in app)
         df = self.history
         df = df[df.index.isin(self.torrentData.columns) |
-                (df["add"].values > NOW - pd.Timedelta(30, unit="days"))]
+                (df["add"].values > NOW - timedelta(days=30))]
 
         # save new info to dataframe
         self.history = df.append(
@@ -481,7 +483,7 @@ class qBittorrent:
             ))
 
         # set n hours of silence
-        self.silence = NOW + pd.Timedelta(len(downloadList), unit="hours")
+        self.silence = NOW + timedelta(hours=len(downloadList))
 
     def get_preference(self, key: str):
         """Query qBittorrent preferences by key."""
@@ -614,15 +616,15 @@ class MTeam:
         cols = {}
         A, B = self.minPeer
         visited = set(self.qb.history["id"])
-        sub_nondigit = re.compile(r"[^0-9]+").sub
+
+        sub_nondigit = re.compile(r"\D").sub
         search_size = re.compile(
-            r"(?P<num>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)").search
+            r"(?P<num>\d+(?:\.\d+)?)\s*(?P<unit>[KMGT]i?B)").search
 
         re_download = re.compile(r"\bdownload\.php\?")
         re_details = re.compile(r"\bdetails\.php\?")
         re_time = re.compile(
-            r"^\W*限時：\W*(?:0*([0-9]+)\s*日)?\W*(?:0*([0-9]+)\s*時)?\W*(?:0*([0-9]+)\s*分)?"
-        )
+            r"^\W*限時：\W*(?:0*(\d+)\s*日)?\W*(?:(\d+)\s*時)?\W*(?:(\d+)\s*分)?")
 
         print(f"Connecting to M-Team... Pages: {len(self.feeds)}.")
 
@@ -661,7 +663,7 @@ class MTeam:
                     size = int(float(size["num"]) * BYTESIZE[size["unit"]])
                     if (peer < A * size + B or
                             "peer-active" in row[c_prog]["class"] or
-                            sub_nondigit("", row[c_up].get_text()) == "0"):
+                            not int(sub_nondigit("", row[c_up].get_text()))):
                         continue
 
                     link = row[c_title].find("a", href=re_download)["href"]
