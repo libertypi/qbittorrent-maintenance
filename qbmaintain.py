@@ -1,3 +1,4 @@
+import os
 import pickle
 import re
 import shutil
@@ -92,6 +93,10 @@ class Logger:
                 f.truncate()
 
         except FileNotFoundError:
+            if not isinstance(logfile, Path):
+                logfile = Path(logfile)
+
+            logfile.parent.mkdir(parents=True, exist_ok=True)
             with open(logfile, mode="w", encoding="utf-8") as f:
                 f.write(self.__str__())
 
@@ -99,7 +104,7 @@ class Logger:
             try:
                 shutil.copy(logfile, copy_to)
             except OSError as e:
-                print("Copying log failed:", e)
+                print(e)
 
 
 class qBittorrent:
@@ -234,8 +239,8 @@ class qBittorrent:
         )
 
         # qBittorrent overall ul/dl speeds
+        df = self.appData
         try:
-            df = self.appData
             last = df.iloc[-1]
             if last.name >= NOW or (last.values > app_row.values).any():
                 raise ValueError
@@ -244,12 +249,13 @@ class qBittorrent:
                 before=NOW - pd.Timedelta(1, unit="hours"),
                 copy=False,
             ).append(app_row)
-        except Exception:
+
+        except (AttributeError, ValueError):
             self.appData = app_row
 
         # upload speeds of each torrent
+        df = self.torrentData
         try:
-            df = self.torrentData
             last = df.iloc[-1]
             if last.name >= NOW or last.gt(torrent_row.iloc[0]).any():
                 raise ValueError
@@ -263,52 +269,57 @@ class qBittorrent:
                 before=NOW - pd.Timedelta(1, unit="days"),
                 copy=False,
             ).append(torrent_row)
-        except Exception:
+
+        except (AttributeError, ValueError):
             self.torrentData = torrent_row
 
         # expiration records of current torrents
+        df = self.history
         try:
-            df = self.history
             df = df.loc[df.index.isin(torrent_row.columns), "expire"]
 
             self.expired = df.index[df.values <= NOW]
             if not self.expired.empty:
                 self.history.loc[self.expired, "expire"] = pd.NaT
-        except Exception:
+
+        except (AttributeError, ValueError):
             self.history = pd.DataFrame(columns=("id", "add", "expire"))
             self.expired = self.history.index
 
     def clean_seeddir(self):
         """Clean files in seed dir which does not belong to qb download list."""
 
-        try:
-            iterdir = self.seed_dir.iterdir()
-        except AttributeError:
+        seed_dir = self.seed_dir
+        if seed_dir is None:
             return
 
-        names = {v["name"] for v in self.torrents.values()}
-        for path in iterdir:
-            if path.name not in names:
-                if path.suffix == ".!qB" and path.stem in names:
+        torrents = {v["name"] for v in self.torrents.values()}
+
+        for name in os.listdir(seed_dir):
+
+            if name not in torrents:
+
+                path = seed_dir.joinpath(name)
+                if path.suffix == ".!qB" and path.stem in torrents:
                     continue
 
-                print("Cleanup:", path.name)
+                print("Cleanup:", path)
                 self._freeSpace = None
-
                 try:
                     if _debug:
                         pass
                     elif path.is_dir():
                         shutil.rmtree(path)
                     else:
-                        path.unlink()
+                        os.unlink(path)
                 except OSError as e:
-                    print("Deletion Failed:", e)
+                    print(e)
                 else:
-                    logger.record("Cleanup", None, path.name)
+                    logger.record("Cleanup", None, name)
 
     def need_action(self) -> bool:
-        """Whether the current situation requires further action (downloads or removals).
+        """Whether the current situation requires further action (downloads or
+        removals).
 
         True if:
         -   space is bellow threshold
@@ -532,8 +543,8 @@ class qBittorrent:
         lo = df.apply(pd.Series.first_valid_index)
         try:
             speeds: pd.Series
-            speeds = (hi.values - df.lookup(lo, lo.index)) / (
-                hi.name - lo).dt.total_seconds()
+            speeds = ((hi.values - df.lookup(lo, lo.index)) /
+                      (hi.name - lo).dt.total_seconds())
             speeds.dropna(inplace=True)
         except AttributeError:
             return pd.Series(dtype=float)
@@ -560,6 +571,7 @@ class MTeam:
         self.minPeer = minPeer[0] / BYTESIZE["GiB"], minPeer[1]
         self.qb = qb
         self.session = qb.session
+        self._login = False
 
     def _get(self, path: str):
 
@@ -567,20 +579,20 @@ class MTeam:
             response = self.session.get(urljoin(self.DOMAIN, path),
                                         timeout=(7, 28))
             response.raise_for_status()
+            if "/login.php" not in response.url:
+                return response
         except (requests.ConnectionError, requests.HTTPError,
                 requests.Timeout) as e:
             print("Connection error:", e)
             return
         except (requests.RequestException, AttributeError):
-            self.session = self.qb.init_session()
-        else:
-            if "/login.php" not in response.url:
-                return response
+            pass
 
-        if hasattr(self, "_login"):
+        if self._login:
             return
-
         print("Logging in..", end="", flush=True)
+
+        self.session = self.qb.init_session()
         try:
             response = self.session.post(
                 url=self.DOMAIN + "takelogin.php",
@@ -591,10 +603,10 @@ class MTeam:
         except requests.RequestException:
             print("failed.")
             return
-        else:
-            print("ok.")
-            self._login = True
-            return self._get(path)
+
+        print("ok.")
+        self._login = True
+        return self._get(path)
 
     def fetch(self) -> Iterator[Torrent]:
 
@@ -649,7 +661,7 @@ class MTeam:
                     size = int(float(size["num"]) * BYTESIZE[size["unit"]])
                     if (peer < A * size + B or
                             "peer-active" in row[c_prog]["class"] or
-                            not int(sub_nondigit("", row[c_up].get_text()))):
+                            sub_nondigit("", row[c_up].get_text()) == "0"):
                         continue
 
                     link = row[c_title].find("a", href=re_download)["href"]
@@ -733,7 +745,7 @@ class MPSolver:
         # download_size - removed_size <= free_space
         coef = [t.size for t in downloadCand]
         coef.extend(-t.size for t in removeCand)
-        pool = [model.NewBoolVar(f"{i}") for i in range(len(coef))]
+        pool = tuple(model.NewBoolVar(f"{i}") for i in range(len(coef)))
         model.Add(LinearExpr.ScalProd(pool, coef) <= qb.freeSpace)
 
         # downloads - removes(downloading) <= max_active_downloads - total_downloading
