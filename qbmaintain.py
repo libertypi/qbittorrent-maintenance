@@ -586,13 +586,12 @@ class MTeam:
             print("Connection error:", e)
             return
         except (requests.RequestException, AttributeError):
-            pass
+            self.session = self.qb.init_session()
 
         if self._login:
             return
         print("Logging in..", end="", flush=True)
 
-        self.session = self.qb.init_session()
         try:
             response = self.session.post(
                 url=self.DOMAIN + "takelogin.php",
@@ -615,14 +614,15 @@ class MTeam:
         cols = {}
         A, B = self.minPeer
         visited = set(self.qb.history["id"])
-        transTable = str.maketrans({"日": "D", "時": "H", "分": "T"})
         sub_nondigit = re.compile(r"[^0-9]+").sub
         search_size = re.compile(
             r"(?P<num>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>[KMGT]i?B)").search
 
         re_download = re.compile(r"\bdownload\.php\?")
         re_details = re.compile(r"\bdetails\.php\?")
-        re_timelimit = re.compile(r"^\s*限時：")
+        re_time = re.compile(
+            r"^\W*限時：\W*(?:0*([0-9]+)\s*日)?\W*(?:0*([0-9]+)\s*時)?\W*(?:0*([0-9]+)\s*分)?"
+        )
 
         print(f"Connecting to M-Team... Pages: {len(self.feeds)}.")
 
@@ -669,11 +669,12 @@ class MTeam:
                     if tid in visited:
                         continue
 
-                    expire = row[c_title].find(string=re_timelimit)
+                    expire = row[c_title].find(string=re_time)
                     if expire:
-                        if "日" not in expire:
+                        expire = re_time.search(expire).groups("0")
+                        if expire[0] == "0":
                             continue
-                        expire = expire.partition("：")[2].translate(transTable)
+                        expire = "{}D{}H{}T".format(*expire)
 
                     title = row[c_title].find("a", href=re_details, string=True)
                     title = title.get("title") or title.get_text(strip=True)
