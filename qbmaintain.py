@@ -6,7 +6,7 @@ import sys
 from collections import Counter
 from configparser import ConfigParser
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import timedelta, datetime
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, Sequence, Tuple
 from urllib.parse import urljoin
@@ -47,7 +47,7 @@ class Torrent:
     size: int
     peer: int
     link: str
-    expire: str
+    expire: timedelta
     title: str
     hash: str = None
 
@@ -71,7 +71,7 @@ class Logger:
         """Record a line of log."""
 
         self._log.append("{:17}    {:8}    {:>11}    {}\n".format(
-            pd.Timestamp.now().strftime("%D %T"),
+            datetime.now().strftime("%D %T"),
             action,
             humansize(size),
             name,
@@ -161,7 +161,7 @@ class qBittorrent:
 
         res = requests.request(method,
                                self._api_base + path,
-                               timeout=7,
+                               timeout=6.1,
                                **kwargs)
         res.raise_for_status()
         return res
@@ -394,7 +394,7 @@ class qBittorrent:
             })
 
         # exclude those added in less than 1 day
-        yesterday = pd.Timestamp.now(tz="UTC").timestamp() - 86400
+        yesterday = datetime.now().timestamp() - 86400
 
         # weight in Removables:
         # speed > deadThresh: None (use the same factor as new torrents)
@@ -452,12 +452,12 @@ class qBittorrent:
                 logger.record("Error", None, e)
                 return
 
-        # convert time strings to timestamp objects
+        # convert timedelta to timestamp
         # read hash and name from torrent file
         for t in downloadList:
-            try:
-                t.expire = NOW + pd.Timedelta(t.expire)
-            except ValueError:
+            if isinstance(t.expire, timedelta):
+                t.expire = NOW + t.expire
+            else:
                 t.expire = pd.NaT
             try:
                 torrent = TorrentParser.from_string(content[t.id])
@@ -566,7 +566,7 @@ class MTeam:
     DOMAIN = "https://pt.m-team.cc/"
 
     def __init__(self, *, feeds: Sequence[str], username: str, password: str,
-                 minPeer: Tuple[float, int], qb: qBittorrent):
+                 minPeer: Tuple[float, float], qb: qBittorrent):
 
         self.feeds = feeds
         self._account = {"username": username, "password": password}
@@ -578,11 +578,10 @@ class MTeam:
     def _get(self, path: str):
 
         try:
-            response = self.session.get(urljoin(self.DOMAIN, path),
-                                        timeout=(7, 28))
-            response.raise_for_status()
-            if "/login.php" not in response.url:
-                return response
+            r = self.session.get(urljoin(self.DOMAIN, path), timeout=(6.1, 27))
+            r.raise_for_status()
+            if "/login.php" not in r.url:
+                return r
         except (requests.ConnectionError, requests.HTTPError,
                 requests.Timeout) as e:
             print("Connection error:", e)
@@ -595,12 +594,12 @@ class MTeam:
         print("Logging in..", end="", flush=True)
 
         try:
-            response = self.session.post(
+            r = self.session.post(
                 url=self.DOMAIN + "takelogin.php",
                 data=self._account,
                 headers={"referer": self.DOMAIN + "login.php"},
             )
-            response.raise_for_status()
+            r.raise_for_status()
         except requests.RequestException:
             print("failed.")
             return
@@ -624,7 +623,7 @@ class MTeam:
         re_download = re.compile(r"\bdownload\.php\?")
         re_details = re.compile(r"\bdetails\.php\?")
         re_time = re.compile(
-            r"^\W*限時：\W*(?:0*(\d+)\s*日)?\W*(?:(\d+)\s*時)?\W*(?:(\d+)\s*分)?")
+            r"^\W*限時：\W*(?:(\d+)\s*日)?\W*(?:(\d+)\s*時)?\W*(?:(\d+)\s*分)?")
 
         print(f"Connecting to M-Team... Pages: {len(self.feeds)}.")
 
@@ -673,10 +672,12 @@ class MTeam:
 
                     expire = row[c_title].find(string=re_time)
                     if expire:
-                        expire = re_time.search(expire).groups("0")
-                        if expire[0] == "0":
+                        expire = re_time.search(expire).groups(default=0)
+                        expire = timedelta(days=int(expire[0]),
+                                           hours=int(expire[1]),
+                                           minutes=int(expire[2]))
+                        if expire.total_seconds() < 86400:
                             continue
-                        expire = "{}D{}H{}T".format(*expire)
 
                     title = row[c_title].find("a", href=re_details, string=True)
                     title = title.get("title") or title.get_text(strip=True)
@@ -941,7 +942,7 @@ def main():
             feeds=mt["feeds"].split(),
             username=mt["username"],
             password=mt["password"],
-            minPeer=(mt.getfloat("peer_slope"), mt.getint("peer_intercept")),
+            minPeer=(mt.getfloat("peer_slope"), mt.getfloat("peer_intercept")),
             qb=qb,
         )
         solver = MPSolver(
