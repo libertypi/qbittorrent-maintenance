@@ -29,7 +29,6 @@ BYTESIZE: Dict[str, int] = {
 @dataclass
 class Removable:
     """Removable torrents from qBittorrent."""
-
     hash: str
     size: int
     peer: int
@@ -41,7 +40,6 @@ class Removable:
 @dataclass
 class Torrent:
     """Torrents to be downloaded from web."""
-
     id: str
     size: int
     peer: int
@@ -132,7 +130,11 @@ class qBittorrent:
         self._dead_thresh = dead_thresh * BYTESIZE["KiB"]
 
         self._api_base = urljoin(host, "api/v2/")
-        maindata: Dict[str, dict] = self._request("sync/maindata").json()
+        try:
+            maindata: Dict[str, dict] = self._request("sync/maindata").json()
+        except requests.RequestException as e:
+            print("API connection failed:", e, file=sys.stderr)
+            sys.exit(1)
 
         self.server_state = d = maindata["server_state"]
         if d["connection_status"] not in ("connected", "firewalled"):
@@ -154,7 +156,7 @@ class qBittorrent:
 
         res = requests.request(method,
                                self._api_base + path,
-                               timeout=6.1,
+                               timeout=9.1,
                                **kwargs)
         res.raise_for_status()
         return res
@@ -334,7 +336,7 @@ class qBittorrent:
         if self.freeSpace < 0:
             return True
 
-        if NOW <= self.silence:
+        if NOW < self.silence:
             return False
 
         return (
@@ -883,8 +885,21 @@ def read_config(configfile: Path):
             elif arg.startswith("-r"):
                 _dryrun = True
                 basic = parser["DEBUG"]
+            elif arg.startswith("-h"):
+                print(
+                    "qBittorrent Maintenance Tool",
+                    "Copyright: David Pi",
+                    "",
+                    "optional arguments:",
+                    "  -h    print this message and exit",
+                    "  -d    dry run",
+                    "  -r    dry run with [DEBUG] config",
+                    sep="\n",
+                )
+                sys.exit()
             else:
-                raise ValueError(f"Unrecognized argument: '{arg}'")
+                print(f"Unrecognized argument: '{arg}'", file=sys.stderr)
+                sys.exit(1)
 
         return basic, parser["MTEAM"]
 
