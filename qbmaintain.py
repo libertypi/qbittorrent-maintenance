@@ -305,7 +305,7 @@ class qBittorrent:
             if name not in torrents:
 
                 path = seed_dir.joinpath(name)
-                if path.stem in torrents and path.suffix == ".!qB":
+                if path.suffix == ".!qB" and path.stem in torrents:
                     continue
 
                 print("Cleanup:", path)
@@ -674,7 +674,7 @@ class MTeam:
                         expire = timedelta(days=int(expire[0]),
                                            hours=int(expire[1]),
                                            minutes=int(expire[2]))
-                        if expire.total_seconds() < 86400:
+                        if expire.days < 1:
                             continue
 
                     title = row[c_title].find("a", href=re_details, string=True)
