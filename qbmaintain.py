@@ -113,8 +113,8 @@ class Logger:
 class qBittorrent:
     """The manager class for communicating with qBittorrent and data persistence."""
 
-    appData: pd.DataFrame
-    torrentData: pd.DataFrame
+    server_data: pd.DataFrame
+    torrent_data: pd.DataFrame
     history: pd.DataFrame
     silence: pd.Timestamp
     session: requests.Session
@@ -181,8 +181,8 @@ class qBittorrent:
             with open(self.datafile, mode="rb") as f:
                 data = pickle.load(f)
             if all(map(isinstance, data, types)):
-                (self.appData, self.torrentData, self.history, self.silence,
-                 self.session) = data
+                (self.server_data, self.torrent_data, self.history,
+                 self.silence, self.session) = data
                 return
         except FileNotFoundError:
             pass
@@ -195,7 +195,7 @@ class qBittorrent:
                 except OSError:
                     pass
 
-        self.appData = self.torrentData = self.history = None
+        self.server_data = self.torrent_data = self.history = None
         self.silence = NOW
         self.init_session()
 
@@ -206,7 +206,7 @@ class qBittorrent:
             return
         try:
             with open(self.datafile, "wb") as f:
-                pickle.dump((self.appData, self.torrentData, self.history,
+                pickle.dump((self.server_data, self.torrent_data, self.history,
                              self.silence, self.session), f)
         except (OSError, pickle.PickleError) as e:
             msg = f"Saving data failed: {e}"
@@ -244,22 +244,21 @@ class qBittorrent:
         )
 
         # qBittorrent overall ul/dl speeds
-        df = self.appData
+        df = self.server_data
         try:
             last = df.iloc[-1]
             if last.name >= NOW or (last.values > app_row.values).any():
                 raise ValueError
 
-            self.appData = df.truncate(
+            self.server_data = df.truncate(
                 before=NOW - timedelta(hours=1),
                 copy=False,
             ).append(app_row)
-
         except (AttributeError, ValueError):
-            self.appData = app_row
+            self.server_data = app_row
 
         # upload speeds of each torrent
-        df = self.torrentData
+        df = self.torrent_data
         try:
             last = df.iloc[-1]
             if last.name >= NOW or last.gt(torrent_row.iloc[0]).any():
@@ -270,13 +269,12 @@ class qBittorrent:
                 df.drop(columns=delete, inplace=True, errors="ignore")
                 df.dropna(how="all", inplace=True)
 
-            self.torrentData = df.truncate(
+            self.torrent_data = df.truncate(
                 before=NOW - timedelta(days=1),
                 copy=False,
             ).append(torrent_row)
-
         except (AttributeError, ValueError):
-            self.torrentData = torrent_row
+            self.torrent_data = torrent_row
 
         # expiration records of current torrents
         df = self.history
@@ -286,7 +284,6 @@ class qBittorrent:
             self.expired = df.index[df.values <= NOW]
             if not self.expired.empty:
                 self.history.loc[self.expired, "expire"] = pd.NaT
-
         except (AttributeError, ValueError):
             self.history = pd.DataFrame(columns=("id", "add", "expire"))
             self.expired = self.history.index
@@ -299,11 +296,9 @@ class qBittorrent:
             return
 
         torrents = {v["name"] for v in self.torrents.values()}
-
         for name in os.listdir(seed_dir):
 
             if name not in torrents:
-
                 path = seed_dir.joinpath(name)
                 if path.suffix == ".!qB" and path.stem in torrents:
                     continue
@@ -371,10 +366,7 @@ class qBittorrent:
 
         # get 1/3 break point using jenks method
         try:
-            c = speeds.size - 1
-            if c > 3:
-                c = 3
-            breaks = jenks_breaks(speeds, nb_class=c)[1]
+            breaks = jenks_breaks(speeds, nb_class=min(speeds.size - 1, 3))[1]
         except Exception as e:
             print("Jenkspy failed:", e, file=sys.stderr)
             breaks = speeds.mean()
@@ -468,7 +460,7 @@ class qBittorrent:
 
         # cleanup outdated records (older than 30 days and not in app)
         df = self.history
-        df = df[df.index.isin(self.torrentData.columns) |
+        df = df[df.index.isin(self.torrent_data.columns) |
                 (df["add"].values > NOW - timedelta(days=30))]
 
         # save new info to dataframe
@@ -522,7 +514,7 @@ class qBittorrent:
 
         Returns: numpy.array([<ul>, <dl>])
         """
-        df = self.appData
+        df = self.server_data
         hi = df.iloc[-1]
         lo = df.iloc[0]
         t = (hi.name - lo.name).total_seconds()
@@ -537,7 +529,7 @@ class qBittorrent:
         Torrents without meaningful speed (not enough records) will be removed
         from result.
         """
-        df = self.torrentData
+        df = self.torrent_data
         hi = df.iloc[-1]
         lo = df.apply(pd.Series.first_valid_index)
         try:
