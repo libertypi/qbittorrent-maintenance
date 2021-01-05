@@ -107,7 +107,7 @@ class Logger:
             try:
                 shutil.copy(logfile, copy_to)
             except OSError as e:
-                print(e)
+                print(e, file=sys.stderr)
 
 
 class qBittorrent:
@@ -144,8 +144,9 @@ class qBittorrent:
 
         self.server_state = d = maindata["server_state"]
         if d["connection_status"] not in ("connected", "firewalled"):
-            print("qBittorrent is not connected to the internet.")
-            sys.exit()
+            print("qBittorrent is not connected to the internet.",
+                  file=sys.stderr)
+            sys.exit(1)
 
         self.torrents = d = maindata["torrents"]
         self.state_counter = Counter(v["state"] for v in d.values())
@@ -159,37 +160,44 @@ class qBittorrent:
     def _request(self, path: str, *, method: str = "GET", **kwargs):
         """Communicate with qBittorrent API."""
 
-        res = requests.request(method,
-                               self._api_base + path,
-                               timeout=6.1,
-                               **kwargs)
-        res.raise_for_status()
-        return res
+        try:
+            res = requests.request(method,
+                                   self._api_base + path,
+                                   timeout=6.1,
+                                   **kwargs)
+            res.raise_for_status()
+        except requests.RequestException as e:
+            print("API connection error:", e, file=sys.stderr)
+            sys.exit(1)
+        else:
+            return res
 
     def _load_data(self):
         """Load data objects from pickle."""
 
+        types = (pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Timestamp,
+                 requests.Session)
         try:
             with open(self.datafile, mode="rb") as f:
-                (
-                    self.appData,
-                    self.torrentData,
-                    self.history,
-                    self.silence,
-                    self.session,
-                ) = pickle.load(f)
-
-        except (OSError, pickle.PickleError) as e:
-
-            if self.datafile.exists():
-                print(f"Reading '{self.datafile}' failed: {e}")
-                if not _debug:
+                data = pickle.load(f)
+            if all(map(isinstance, data, types)):
+                (self.appData, self.torrentData, self.history, self.silence,
+                 self.session) = data
+                return
+        except FileNotFoundError:
+            pass
+        except (OSError, pickle.PickleError, TypeError) as e:
+            print(f"'{self.datafile}' corrupted: {e}", file=sys.stderr)
+            if not _debug:
+                try:
                     self.datafile.rename(
-                        f"{self.datafile}_{NOW.strftime('%y%m%d_%H%M%S')}")
+                        f"{self.datafile}_{NOW.strftime('%y%m%d%H%M%S')}")
+                except OSError:
+                    pass
 
-            self.appData = self.torrentData = self.history = None
-            self.silence = NOW
-            self.init_session()
+        self.appData = self.torrentData = self.history = None
+        self.silence = NOW
+        self.init_session()
 
     def dump_data(self):
         """Save data to disk."""
@@ -198,18 +206,12 @@ class qBittorrent:
             return
         try:
             with open(self.datafile, "wb") as f:
-                pickle.dump((
-                    self.appData,
-                    self.torrentData,
-                    self.history,
-                    self.silence,
-                    self.session,
-                ), f)
-
+                pickle.dump((self.appData, self.torrentData, self.history,
+                             self.silence, self.session), f)
         except (OSError, pickle.PickleError) as e:
-            msg = f"Writing data to disk failed: {e}"
+            msg = f"Saving data failed: {e}"
             logger.record("Error", None, msg)
-            print(msg)
+            print(msg, file=sys.stderr)
 
     def init_session(self):
         """Instantiate a new requests session."""
@@ -303,7 +305,7 @@ class qBittorrent:
             if name not in torrents:
 
                 path = seed_dir.joinpath(name)
-                if path.suffix == ".!qB" and path.stem in torrents:
+                if path.stem in torrents and path.suffix == ".!qB":
                     continue
 
                 print("Cleanup:", path)
@@ -316,7 +318,7 @@ class qBittorrent:
                     else:
                         os.unlink(path)
                 except OSError as e:
-                    print(e)
+                    print(e, file=sys.stderr)
                 else:
                     logger.record("Cleanup", None, name)
 
@@ -350,11 +352,8 @@ class qBittorrent:
         if self.freeSpace < 0:
             return True
 
-        try:
-            if NOW <= self.silence:
-                return False
-        except TypeError:
-            self.silence = NOW
+        if NOW <= self.silence:
+            return False
 
         return (
             (speeds < self._speed_thresh).all() and
@@ -377,9 +376,10 @@ class qBittorrent:
                 c = 3
             breaks = jenks_breaks(speeds, nb_class=c)[1]
         except Exception as e:
-            print("Jenkspy failed:", e)
+            print("Jenkspy failed:", e, file=sys.stderr)
             breaks = speeds.mean()
 
+        torrents = self.torrents
         thresh = self._dead_thresh
         if breaks < thresh:
             breaks = thresh
@@ -387,11 +387,8 @@ class qBittorrent:
         removes = speeds[speeds.values <= breaks]
         if not self.expired.empty:
             removes = removes.to_dict()
-            removes.update({
-                k: None
-                for k in self.expired
-                if self.torrents[k]["progress"] != 1
-            })
+            removes.update(
+                {k: None for k in self.expired if torrents[k]["progress"] != 1})
 
         # exclude those added in less than 1 day
         yesterday = datetime.now().timestamp() - 86400
@@ -401,7 +398,7 @@ class qBittorrent:
         # speed <= deadThresh: 1 (minimum value to be considered)
         # expired when still downloading: 0 (delete unconditionally)
         for k, v in removes.items():
-            t = self.torrents[k]
+            t = torrents[k]
             if v is None:
                 v = 0
             elif t["added_on"] > yesterday:
@@ -465,7 +462,7 @@ class qBittorrent:
                 t.title = torrent.name
                 t.size = torrent.total_size
             except TorrentoolException as e:
-                print("Torrentool error:", e)
+                print("Torrentool error:", e, file=sys.stderr)
 
             logger.record("Download", t.size, t.title)
 
@@ -584,7 +581,7 @@ class MTeam:
                 return r
         except (requests.ConnectionError, requests.HTTPError,
                 requests.Timeout) as e:
-            print("Connection error:", e)
+            print("Connection error:", e, file=sys.stderr)
             return
         except (requests.RequestException, AttributeError):
             self.session = self.qb.init_session()
@@ -635,19 +632,20 @@ class MTeam:
                     select("#form_torrent table.torrents > tr"))
                 row = next(soup)
             except AttributeError:
-                print("Fetching failed:", feed)
+                print("Fetching failed:", feed, file=sys.stderr)
                 continue
             except StopIteration:
-                print("Unable to locate table, css selector broken?", feed)
+                print("Unable to locate table, css selector broken?",
+                      feed,
+                      file=sys.stderr)
                 continue
             else:
                 print("Fetching success.")
 
             for i, td in enumerate(row):
                 title = td.find(title=True)
-                title = title["title"].strip() if title else td.get_text(
-                    strip=True)
-                cols[title] = i
+                title = title["title"] if title else td.get_text()
+                cols[title.strip()] = i
 
             c_title = cols.pop("標題", 1)
             c_size = cols.pop("大小", 4)
@@ -683,7 +681,7 @@ class MTeam:
                     title = title.get("title") or title.get_text(strip=True)
 
                 except Exception as e:
-                    print("Parsing page error:", e)
+                    print("Parsing error:", e, file=sys.stderr)
                     continue
 
                 visited.add(tid)
@@ -701,7 +699,7 @@ class MTeam:
         try:
             return {t.id: self._get(t.link).content for t in downloadList}
         except AttributeError:
-            print(f"Downloading torrents failed.")
+            print(f"Downloading torrents failed.", file=sys.stderr)
 
 
 class MPSolver:
@@ -799,7 +797,7 @@ class MPSolver:
         """Print report to stdout."""
 
         if self.status is None:
-            print("Solver did not start.")
+            print("Solver did not start.", file=sys.stderr)
             return
 
         sepSlim = "-" * 50
@@ -860,7 +858,6 @@ class MPSolver:
 
 def humansize(size: int) -> str:
     """Convert bytes to human readable sizes."""
-
     try:
         for suffix in ("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"):
             size /= 1024
@@ -916,7 +913,7 @@ def read_config(configfile: Path):
     with open(configfile, "w", encoding="utf-8") as f:
         parser.write(f)
 
-    print("Please edit config.ini before running this script again.")
+    print(f'Please edit "{configfile}" before running me again.')
     sys.exit()
 
 
