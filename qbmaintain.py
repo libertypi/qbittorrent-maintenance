@@ -15,7 +15,7 @@ from urllib.parse import urljoin
 import pandas as pd
 import requests
 
-_debug: bool = False
+_dryrun: bool = False
 
 NOW = pd.Timestamp.now()
 
@@ -81,7 +81,7 @@ class Logger:
 
         If `copy_to` is a dir, logfile will be copied to that directory.
         """
-        if _debug:
+        if _dryrun:
             return
         try:
             try:
@@ -175,7 +175,7 @@ class qBittorrent:
             pass
         except (OSError, pickle.PickleError, TypeError) as e:
             print(f"'{self.datafile}' corrupted: {e}", file=sys.stderr)
-            if not _debug:
+            if not _dryrun:
                 try:
                     self.datafile.rename(
                         f"{self.datafile}_{NOW.strftime('%y%m%d%H%M%S')}")
@@ -189,7 +189,7 @@ class qBittorrent:
     def dump_data(self):
         """Save data to disk."""
 
-        if _debug:
+        if _dryrun:
             return
         try:
             with open(self.datafile, "wb") as f:
@@ -293,7 +293,7 @@ class qBittorrent:
                 print("Cleanup:", path)
                 self._freeSpace = None
                 try:
-                    if _debug:
+                    if _dryrun:
                         pass
                     elif path.is_dir():
                         shutil.rmtree(path)
@@ -398,7 +398,7 @@ class qBittorrent:
     def remove_torrents(self, removeList: Sequence[Removable]):
         """Remove torrents and delete files."""
 
-        if not removeList or _debug:
+        if not removeList or _dryrun:
             return
 
         self._request("torrents/delete",
@@ -416,12 +416,12 @@ class qBittorrent:
         if not content:
             return
         assert len(downloadList) == len(
-            content), "Lengths of params should match."
+            content), "sequence lengths should match."
 
         from torrentool.api import Torrent as TorrentParser
         from torrentool.exceptions import TorrentoolException
 
-        if not _debug:
+        if not _dryrun:
             try:
                 self._request("torrents/add", method="POST", files=content)
             except requests.RequestException as e:
@@ -473,7 +473,7 @@ class qBittorrent:
         paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
         if not paused.isdisjoint(self.state_counter):
             print("Resume torrents.")
-            if not _debug:
+            if not _dryrun:
                 self._request("torrents/resume", params={"hashes": "all"})
 
     @property
@@ -601,7 +601,7 @@ class MTeam:
         re_time = re.compile(
             r"^\W*限時：\W*(?:(\d+)\s*日)?\W*(?:(\d+)\s*時)?\W*(?:(\d+)\s*分)?")
 
-        print(f"Connecting to M-Team... Pages: {len(self.pages)}.")
+        print("Connecting to M-Team...")
 
         for page in self.pages:
             try:
@@ -611,13 +611,13 @@ class MTeam:
                     select("#form_torrent table.torrents > tr"))
                 row = next(soup)
             except AttributeError:
-                print(f"Fetching failed: {page}", file=sys.stderr)
+                print(f"Failed: {page}", file=sys.stderr)
                 continue
             except StopIteration:
                 print(f"CSS selector broken: {page}", file=sys.stderr)
                 continue
             else:
-                print("Fetching success.")
+                print(f'Success: {page.partition("?")[0]}')
 
             for i, td in enumerate(row):
                 title = td.find(title=True)
@@ -673,6 +673,7 @@ class MTeam:
 
     def download(self, downloadList: Sequence[Torrent]):
         """Download torrents from mteam."""
+        print("Downloading torrents...")
         try:
             return {t.id: self._get(t.link).content for t in downloadList}
         except AttributeError:
@@ -848,7 +849,7 @@ def humansize(size: int) -> str:
 def read_config(configfile: Path):
     """Read or create config file."""
 
-    global _debug
+    global _dryrun
 
     parser = ConfigParser()
     parser["DEFAULT"] = {
@@ -878,9 +879,9 @@ def read_config(configfile: Path):
 
         for arg in sys.argv[1:]:
             if arg.startswith("-d"):
-                _debug = True
+                _dryrun = True
             elif arg.startswith("-r"):
-                _debug = True
+                _dryrun = True
                 basic = parser["DEBUG"]
             else:
                 raise ValueError(f"Unrecognized argument: '{arg}'")
@@ -910,7 +911,7 @@ def main():
     )
     qb.clean_seeddir()
 
-    if qb.need_action() or _debug:
+    if qb.need_action() or _dryrun:
 
         mteam = MTeam(
             pages=mt["pages"].split(),
