@@ -20,10 +20,9 @@ _debug: bool = False
 NOW = pd.Timestamp.now()
 
 BYTESIZE: Dict[str, int] = {
-    k: v for kk, v in zip(
-        ((f"{c}B", f"{c}iB") for c in "KMGTP"),
-        (1024**i for i in range(1, 6)),
-    ) for k in kk
+    k: v for kk, v in (
+        ((c + "iB", c + "B"), 1024**i) for i, c in enumerate("KMGTP", 1))
+    for k in kk
 }
 
 
@@ -607,7 +606,7 @@ class MTeam:
 
         sub_nondigit = re.compile(r"\D").sub
         search_size = re.compile(
-            r"(?P<num>\d+(?:\.\d+)?)\s*(?P<unit>[KMGT]i?B)").search
+            r"(?P<num>\d+(?:\.\d+)?)\s*(?P<unit>[KMGTP]i?B)").search
 
         re_download = re.compile(r"\bdownload\.php\?")
         re_details = re.compile(r"\bdetails\.php\?")
