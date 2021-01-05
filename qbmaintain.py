@@ -67,7 +67,7 @@ class Logger:
         return not not self._log
 
     def record(self, action: str, size: int, name: str):
-        """Record a line of log."""
+        """Record one line of log."""
 
         self._log.append("{:17}    {:8}    {:>11}    {}\n".format(
             datetime.now().strftime("%D %T"),
@@ -83,30 +83,23 @@ class Logger:
         """
         if _debug:
             return
-
         try:
-            with open(logfile, mode="r+", encoding="utf-8") as f:
-                for _ in range(2):
-                    f.readline()
-                backup = f.read()
-                f.seek(0)
-                f.write(self.__str__())
-                f.write(backup)
-                f.truncate()
-
-        except FileNotFoundError:
-            if not isinstance(logfile, Path):
-                logfile = Path(logfile)
-
-            logfile.parent.mkdir(parents=True, exist_ok=True)
-            with open(logfile, mode="w", encoding="utf-8") as f:
-                f.write(self.__str__())
-
-        if copy_to:
             try:
+                with open(logfile, mode="r+", encoding="utf-8") as f:
+                    for _ in range(2):
+                        f.readline()
+                    backup = f.read()
+                    f.seek(0)
+                    f.write(self.__str__())
+                    f.write(backup)
+                    f.truncate()
+            except FileNotFoundError:
+                with open(logfile, mode="w", encoding="utf-8") as f:
+                    f.write(self.__str__())
+            if copy_to:
                 shutil.copy(logfile, copy_to)
-            except OSError as e:
-                print(e, file=sys.stderr)
+        except OSError as e:
+            print(e, file=sys.stderr)
 
 
 class qBittorrent:
@@ -159,17 +152,12 @@ class qBittorrent:
     def _request(self, path: str, *, method: str = "GET", **kwargs):
         """Communicate with qBittorrent API."""
 
-        try:
-            res = requests.request(method,
-                                   self._api_base + path,
-                                   timeout=6.1,
-                                   **kwargs)
-            res.raise_for_status()
-        except requests.RequestException as e:
-            print("API connection error:", e, file=sys.stderr)
-            sys.exit(1)
-        else:
-            return res
+        res = requests.request(method,
+                               self._api_base + path,
+                               timeout=6.1,
+                               **kwargs)
+        res.raise_for_status()
+        return res
 
     def _load_data(self):
         """Load data objects from pickle."""
@@ -553,10 +541,10 @@ class MTeam:
 
     DOMAIN = "https://pt.m-team.cc/"
 
-    def __init__(self, *, feeds: Sequence[str], username: str, password: str,
+    def __init__(self, *, pages: Sequence[str], username: str, password: str,
                  minPeer: Tuple[float, float], qb: qBittorrent):
 
-        self.feeds = feeds
+        self.pages = pages
         self._account = {"username": username, "password": password}
         self.minPeer = minPeer[0] / BYTESIZE["GiB"], minPeer[1]
         self.qb = qb
@@ -613,22 +601,20 @@ class MTeam:
         re_time = re.compile(
             r"^\W*限時：\W*(?:(\d+)\s*日)?\W*(?:(\d+)\s*時)?\W*(?:(\d+)\s*分)?")
 
-        print(f"Connecting to M-Team... Pages: {len(self.feeds)}.")
+        print(f"Connecting to M-Team... Pages: {len(self.pages)}.")
 
-        for feed in self.feeds:
+        for page in self.pages:
             try:
                 soup = (
                     tr.find_all("td", recursive=False)
-                    for tr in BeautifulSoup(self._get(feed).content, "lxml").
+                    for tr in BeautifulSoup(self._get(page).content, "lxml").
                     select("#form_torrent table.torrents > tr"))
                 row = next(soup)
             except AttributeError:
-                print("Fetching failed:", feed, file=sys.stderr)
+                print(f"Fetching failed: {page}", file=sys.stderr)
                 continue
             except StopIteration:
-                print("Unable to locate table, css selector broken?",
-                      feed,
-                      file=sys.stderr)
+                print(f"CSS selector broken: {page}", file=sys.stderr)
                 continue
             else:
                 print("Fetching success.")
@@ -871,7 +857,7 @@ def read_config(configfile: Path):
         "disk_quota": "50",
         "up_rate_thresh": "2700",
         "dl_rate_thresh": "6000",
-        "dead_torrent_up_thresh": "2",
+        "dead_up_thresh": "2",
         "log_backup_dir": "",
     }
     parser["MTEAM"] = {
@@ -879,7 +865,7 @@ def read_config(configfile: Path):
         "password": "",
         "peer_slope": "0.3",
         "peer_intercept": "30",
-        "feeds": "example1.php\nexample2.php",
+        "pages": "example1.php\nexample2.php",
     }
     parser["DEBUG"] = {
         "host": "http://localhost",
@@ -919,7 +905,7 @@ def main():
         disk_quota=basic.getfloat("disk_quota"),
         speed_thresh=(basic.getint("up_rate_thresh"),
                       basic.getint("dl_rate_thresh")),
-        dead_thresh=basic.getint("dead_torrent_up_thresh"),
+        dead_thresh=basic.getint("dead_up_thresh"),
         datafile=join_root("data"),
     )
     qb.clean_seeddir()
@@ -927,7 +913,7 @@ def main():
     if qb.need_action() or _debug:
 
         mteam = MTeam(
-            feeds=mt["feeds"].split(),
+            pages=mt["pages"].split(),
             username=mt["username"],
             password=mt["password"],
             minPeer=(mt.getfloat("peer_slope"), mt.getfloat("peer_intercept")),
