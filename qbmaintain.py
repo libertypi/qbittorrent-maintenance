@@ -400,14 +400,14 @@ class qBittorrent:
     def remove_torrents(self, removeList: Sequence[Removable]):
         """Remove torrents and delete files."""
 
-        if not removeList or _dryrun:
+        if not removeList:
             return
-
-        self._request("torrents/delete",
-                      params={
-                          "hashes": "|".join(t.hash for t in removeList),
-                          "deleteFiles": True,
-                      })
+        if not _dryrun:
+            self._request("torrents/delete",
+                          params={
+                              "hashes": "|".join(t.hash for t in removeList),
+                              "deleteFiles": True
+                          })
         for t in removeList:
             logger.record("Remove", t.size, t.title)
 
@@ -661,17 +661,17 @@ class MTeam:
 
                 except Exception as e:
                     print("Parsing error:", e, file=sys.stderr)
-                    continue
 
-                visited.add(tid)
-                yield Torrent(
-                    id=tid,
-                    size=size,
-                    peer=peer,
-                    link=link,
-                    expire=expire,
-                    title=title,
-                )
+                else:
+                    visited.add(tid)
+                    yield Torrent(
+                        id=tid,
+                        size=size,
+                        peer=peer,
+                        link=link,
+                        expire=expire,
+                        title=title,
+                    )
 
     def download(self, downloadList: Sequence[Torrent]):
         """Download torrents from mteam."""
@@ -679,7 +679,7 @@ class MTeam:
         try:
             return {t.id: self._get(t.link).content for t in downloadList}
         except AttributeError:
-            print(f"Downloading torrents failed.", file=sys.stderr)
+            print(f"Downloading failed.", file=sys.stderr)
 
 
 class MPSolver:
@@ -885,7 +885,7 @@ def read_config(configfile: Path):
             elif arg.startswith("-r"):
                 _dryrun = True
                 basic = parser["DEBUG"]
-            elif arg.startswith("-h"):
+            else:
                 print(
                     "qBittorrent Maintenance Tool",
                     "Copyright: David Pi",
@@ -896,10 +896,10 @@ def read_config(configfile: Path):
                     "  -r    dry run with [DEBUG] config",
                     sep="\n",
                 )
+                if not arg.startswith("-h"):
+                    print(f"\nerror: unrecognized argument: {arg}",
+                          file=sys.stderr)
                 sys.exit()
-            else:
-                print(f"Unrecognized argument: '{arg}'", file=sys.stderr)
-                sys.exit(1)
 
         return basic, parser["MTEAM"]
 
