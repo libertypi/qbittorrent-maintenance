@@ -238,7 +238,7 @@ class qBittorrent:
         df = self.server_data
         try:
             last = df.iloc[-1]
-            if last.name >= NOW or (last.values > app_row.values).any():
+            if last.name >= NOW or (last.values > app_row.values).all():
                 raise ValueError
 
             self.server_data = df.truncate(
@@ -252,7 +252,7 @@ class qBittorrent:
         df = self.torrent_data
         try:
             last = df.iloc[-1]
-            if last.name >= NOW or last.gt(torrent_row.iloc[0]).any():
+            if last.name >= NOW or last.gt(torrent_row.iloc[0]).all():
                 raise ValueError
 
             delete = df.columns.difference(torrent_row.columns)
