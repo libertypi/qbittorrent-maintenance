@@ -80,6 +80,8 @@ class Logger:
         If `copy_to` is a dir, logfile will be copied to that directory.
         """
         if _dryrun:
+            print(" Logs ".center(50, "-"))
+            print(self.__str__(), end="")
             return
         try:
             try:
