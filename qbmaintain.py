@@ -112,23 +112,16 @@ class qBittorrent:
     session: requests.Session
     expired: pd.Index
 
-    def __init__(
-        self,
-        *,
-        host: str,
-        seed_dir: str,
-        disk_quota: float,
-        speed_thresh: Tuple[int, int],
-        dead_thresh: int,
-        datafile: Path,
-    ):
+    def __init__(self, *, host: str, seed_dir: str, disk_quota: float,
+                 up_thresh: int, dl_thresh: int, dead_thresh: int,
+                 datafile: Path):
 
         self.seed_dir = Path(seed_dir) if seed_dir else None
         self.datafile = (datafile
                          if isinstance(datafile, Path) else Path(datafile))
 
-        self._speed_thresh = (speed_thresh[0] * BYTESIZE["KiB"],
-                              speed_thresh[1] * BYTESIZE["KiB"])
+        self._speed_thresh = (up_thresh * BYTESIZE["KiB"],
+                              dl_thresh * BYTESIZE["KiB"])
         self._dead_thresh = dead_thresh * BYTESIZE["KiB"]
 
         self._api_base = urljoin(host, "api/v2/")
@@ -293,11 +286,13 @@ class qBittorrent:
         return (self.silence <= NOW and
                 self._busy.isdisjoint(self.state_counter) or _dryrun)
 
-    def requires_download(self):
+    def requires_download(self) -> bool:
         """Whether qBittorrent requires downloading new torrents.
 
+        `requires_download` implies `requires_remove`, but not vice versa.
+
         True if:
-        -   Server speed is bellow threshold (not throttled by user)
+        -   server speed is bellow threshold (not throttled by user)
         -   more than one limit-free torrents have expired
         -   in dry run mode
         """
@@ -312,7 +307,7 @@ class qBittorrent:
             and "queuedDL" not in self.state_counter or self.expired.size > 1 or
             _dryrun)
 
-    def requires_cleanup(self):
+    def requires_remove(self) -> bool:
         """Whether some torrents may need to be deleted.
 
         True if:
@@ -487,11 +482,11 @@ class qBittorrent:
             p = self._preferences = self._request("app/preferences").json()
         return p[key]
 
-    _paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
+    _pause = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
 
     def resume_paused(self):
         """If any torrent is paused, for any reason, resume."""
-        if not self._paused.isdisjoint(self.state_counter):
+        if not self._pause.isdisjoint(self.state_counter):
             print("Resume torrents.")
             if not _dryrun:
                 self._request("torrents/resume", params={"hashes": "all"})
@@ -561,12 +556,12 @@ class MTeam:
 
     DOMAIN = "https://pt.m-team.cc/"
 
-    def __init__(self, *, pages: Sequence[str], username: str, password: str,
-                 minPeer: Tuple[float, float], qb: qBittorrent):
+    def __init__(self, *, username: str, password: str, peer_slope: float,
+                 peer_intercept: float, qb: qBittorrent):
 
-        self.pages = pages
         self._account = {"username": username, "password": password}
-        self.minPeer = minPeer[0] / BYTESIZE["GiB"], minPeer[1]
+        self._A = peer_slope / BYTESIZE["GiB"]
+        self._B = peer_intercept
         self.qb = qb
         self.session = qb.session
         self._login = False
@@ -587,8 +582,8 @@ class MTeam:
 
         if self._login:
             return
-        print("Logging in..", end="", flush=True)
 
+        print("Logging in..", end="", flush=True)
         try:
             r = self.session.post(
                 url=self.DOMAIN + "takelogin.php",
@@ -603,12 +598,14 @@ class MTeam:
             self._login = True
             return self.get(path)
 
-    def scan_page(self) -> Iterator[Torrent]:
+    def scan(self, pages: Iterable[str]) -> Iterator[Torrent]:
+        '''Scan a list of pages and yield Torrent objects satisfy conditions.'''
 
         from bs4 import BeautifulSoup
 
         cols = {}
-        A, B = self.minPeer
+        A = self._A
+        B = self._B
         visited = set(self.qb.history["id"])
 
         sub_nondigit = re.compile(r"\D").sub
@@ -622,7 +619,7 @@ class MTeam:
 
         print("Connecting M-Team...")
 
-        for page in self.pages:
+        for page in pages:
             try:
                 soup = (tr.find_all("td", recursive=False)
                         for tr in BeautifulSoup(self.get(page).content, "lxml").
@@ -923,14 +920,14 @@ def read_config(configfile: Path):
 def main():
 
     join_root = Path(__file__).with_name
-    basic, mteam = read_config(join_root("config.ini"))
+    basic, mt = read_config(join_root("config.ini"))
 
     qb = qBittorrent(
         host=basic["host"],
         seed_dir=basic["seed_dir"],
         disk_quota=basic.getfloat("disk_quota"),
-        speed_thresh=(basic.getint("up_rate_thresh"),
-                      basic.getint("dl_rate_thresh")),
+        up_thresh=basic.getint("up_rate_thresh"),
+        dl_thresh=basic.getint("dl_rate_thresh"),
         dead_thresh=basic.getint("dead_up_thresh"),
         datafile=join_root("data"),
     )
@@ -941,18 +938,17 @@ def main():
 
         if qb.requires_download():
             mteam = MTeam(
-                pages=mteam["pages"].split(),
-                username=mteam["username"],
-                password=mteam["password"],
-                minPeer=(mteam.getfloat("peer_slope"),
-                         mteam.getfloat("peer_intercept")),
+                username=mt["username"],
+                password=mt["password"],
+                peer_slope=mt.getfloat("peer_slope"),
+                peer_intercept=mt.getfloat("peer_intercept"),
                 qb=qb,
             )
-            downloadCand = tuple(mteam.scan_page())
+            downloadCand = tuple(mteam.scan(mt["pages"].split()))
         else:
             downloadCand = ()
 
-        if downloadCand or qb.requires_cleanup():
+        if downloadCand or qb.requires_remove():
 
             solver = MPSolver(
                 removeCand=qb.get_remove_cands(),
@@ -962,7 +958,8 @@ def main():
             solver.solve()
 
             qb.remove_torrents(solver.removeList)
-            qb.add_torrent(solver.downloadList, mteam)
+            if downloadCand:
+                qb.add_torrent(solver.downloadList, mteam)  # type: ignore
             solver.report()
 
     qb.resume_paused()
