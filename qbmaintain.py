@@ -134,8 +134,8 @@ class qBittorrent:
         self._api_base = urljoin(host, "api/v2/")
         try:
             maindata: Dict[str, dict] = self._request("sync/maindata").json()
-        except requests.RequestException as e:
-            print("API connection failed:", e, file=sys.stderr)
+        except (requests.RequestException, ValueError) as e:
+            print(f"API communication error: {e}", file=sys.stderr)
             sys.exit(1)
 
         self.server_state = d = maindata["server_state"]
@@ -178,7 +178,7 @@ class qBittorrent:
         except FileNotFoundError:
             pass
         except (OSError, pickle.PickleError, TypeError) as e:
-            print(f"'{self.datafile}' corrupted: {e}", file=sys.stderr)
+            print(f"Reading data failed: {e}", file=sys.stderr)
             if not _dryrun:
                 try:
                     self.datafile.rename(
@@ -420,7 +420,7 @@ class qBittorrent:
         if not content:
             return
         assert len(downloadList) == len(
-            content), "sequence lengths should match."
+            content), "Sequence lengths should match."
 
         from torrentool.api import Torrent as TorrentParser
         from torrentool.exceptions import TorrentoolException
@@ -605,7 +605,7 @@ class MTeam:
         re_time = re.compile(
             r"^\W*限時：\W*(?:(\d+)\s*日)?\W*(?:(\d+)\s*時)?\W*(?:(\d+)\s*分)?")
 
-        print("Connecting to M-Team...")
+        print("Connecting M-Team...")
 
         for page in self.pages:
             try:
@@ -621,7 +621,8 @@ class MTeam:
                 print(f"CSS selector broken: {page}", file=sys.stderr)
                 continue
             else:
-                print(f'Success: {page.partition("?")[0]}')
+                print(
+                    f'Success: {page if len(page) <= 50 else page[:50]+"..."}')
 
             for i, td in enumerate(row):
                 title = td.find(title=True)
