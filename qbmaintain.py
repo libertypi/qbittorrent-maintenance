@@ -637,12 +637,12 @@ class MTeam:
 
             for row in soup:
                 try:
-                    peer = int(sub_nondigit("", row[c_down].get_text()))
-                    size = search_size(row[c_size].get_text())
+                    peer = int(sub_nondigit("", row[c_down].text))
+                    size = search_size(row[c_size].text)
                     size = int(float(size["num"]) * BYTESIZE[size["unit"]])
                     if (peer < A * size + B or
                             "peer-active" in row[c_prog]["class"] or
-                            not int(sub_nondigit("", row[c_up].get_text()))):
+                            not int(sub_nondigit("", row[c_up].text))):
                         continue
 
                     link = row[c_title].find("a", href=re_download)["href"]
