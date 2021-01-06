@@ -6,7 +6,7 @@ import sys
 from collections import Counter
 from configparser import ConfigParser
 from dataclasses import dataclass
-from datetime import timedelta, datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, Sequence, Tuple
 from urllib.parse import urljoin
@@ -279,6 +279,48 @@ class qBittorrent:
             self.history = pd.DataFrame(columns=("id", "add", "expire"))
             self.expired = self.history.index
 
+    _busy = {
+        "checkingUP", "allocating", "checkingDL", "checkingResumeData", "moving"
+    }
+
+    def is_ready(self) -> bool:
+        """Whether qBittorrent is ready for maintenance.
+
+        False if:
+        -   during silence period (explicitly set after a successful download)
+        -   qBittorrent is busy checking, moving data...etc
+        """
+        return (self.silence <= NOW and
+                self._busy.isdisjoint(self.state_counter) or _dryrun)
+
+    def requires_download(self):
+        """Whether qBittorrent requires downloading new torrents.
+
+        True if:
+        -   Server speed is bellow threshold (not throttled by user)
+        -   more than one limit-free torrents have expired
+        -   in dry run mode
+        """
+        speeds = self.speeds
+        print("Last hour avg speed: UL: {}/s, DL: {}/s.".format(
+            *map(humansize, speeds)))
+
+        return (
+            (speeds < self._speed_thresh).all() and
+            not self.server_state["use_alt_speed_limits"] and
+            not 0 < self.server_state["up_rate_limit"] < self._speed_thresh[0]
+            and "queuedDL" not in self.state_counter or self.expired.size > 1 or
+            _dryrun)
+
+    def requires_cleanup(self):
+        """Whether some torrents may need to be deleted.
+
+        True if:
+        -   Space is bellow threshold
+        -   any limited-free torrent has expired
+        """
+        return self.freeSpace < 0 or not self.expired.empty
+
     def clean_seeddir(self):
         """Clean files in seed dir which does not belong to qb download list."""
 
@@ -300,52 +342,15 @@ class qBittorrent:
                     if _dryrun:
                         pass
                     elif path.is_dir():
-                        shutil.rmtree(path)
+                        # has to set ignore_errors=True so that one failure does
+                        # not blow the whole thing up
+                        shutil.rmtree(path, ignore_errors=True)
                     else:
                         os.unlink(path)
                 except OSError as e:
                     print(e, file=sys.stderr)
                 else:
                     logger.record("Cleanup", None, name)
-
-    def need_action(self) -> bool:
-        """Whether the current situation requires further action (downloads or
-        removals).
-
-        True if:
-        -   space is bellow threshold
-        -   speed is bellow threshold and alt_speed is not enabled
-        -   some limited-time free torrents have just expired
-
-        False if:
-        -   qBittorrent is busy (checking, moving data...)
-        -   during silence period (explicitly set after a successful download)
-        -   queued downloading
-        -   any other situations
-        """
-
-        speeds = self.speeds
-        print("Last hour avg speed: UL: {}/s, DL: {}/s.".format(
-            *map(humansize, speeds)))
-
-        busy = {
-            "checkingUP", "allocating", "checkingDL", "checkingResumeData",
-            "moving"
-        }
-        if not busy.isdisjoint(self.state_counter):
-            return False
-
-        if self.freeSpace < 0:
-            return True
-
-        if NOW < self.silence:
-            return False
-
-        return (
-            (speeds < self._speed_thresh).all() and
-            not self.server_state["use_alt_speed_limits"] and
-            not 0 < self.server_state["up_rate_limit"] < self._speed_thresh[0]
-            and "queuedDL" not in self.state_counter or not self.expired.empty)
 
     def get_remove_cands(self) -> Iterator[Removable]:
         """Discover the slowest torrents using jenks natural breaks."""
@@ -405,25 +410,32 @@ class qBittorrent:
         if not removeList:
             return
         if not _dryrun:
-            self._request("torrents/delete",
-                          params={
-                              "hashes": "|".join(t.hash for t in removeList),
-                              "deleteFiles": True
-                          })
+            self._request(
+                "torrents/delete",
+                params={
+                    "hashes": "|".join(t.hash for t in removeList),
+                    "deleteFiles": True
+                },
+            )
         for t in removeList:
             logger.record("Remove", t.size, t.title)
 
-    def add_torrent(self, downloadList: Sequence[Torrent],
-                    content: Dict[str, bytes]):
-        """Upload torrents to qBittorrents and record information."""
+    def add_torrent(self, downloadList: Sequence[Torrent], downloader):
+        """Download torrents and upload to qBittorrent.
 
-        if not content:
+        `downloader` should have a `get` method which takes a path and returns a
+        requests response object. Torrents info is recorded into history
+        afterwards.
+        """
+
+        if not downloadList:
             return
-        assert len(downloadList) == len(
-            content), "Sequence lengths should match."
-
-        from torrentool.api import Torrent as TorrentParser
-        from torrentool.exceptions import TorrentoolException
+        try:
+            downloader = downloader.get
+            content = {t.id: downloader(t.link).content for t in downloadList}
+        except AttributeError:
+            print("Downloading failed.", file=sys.stderr)
+            return
 
         if not _dryrun:
             try:
@@ -431,6 +443,9 @@ class qBittorrent:
             except requests.RequestException as e:
                 logger.record("Error", None, e)
                 return
+
+        from torrentool.api import Torrent as TorrentParser
+        from torrentool.exceptions import TorrentoolException
 
         # convert timedelta to timestamp
         # read hash and name from torrent file
@@ -472,10 +487,11 @@ class qBittorrent:
             p = self._preferences = self._request("app/preferences").json()
         return p[key]
 
+    _paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
+
     def resume_paused(self):
         """If any torrent is paused, for any reason, resume."""
-        paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
-        if not paused.isdisjoint(self.state_counter):
+        if not self._paused.isdisjoint(self.state_counter):
             print("Resume torrents.")
             if not _dryrun:
                 self._request("torrents/resume", params={"hashes": "all"})
@@ -555,7 +571,7 @@ class MTeam:
         self.session = qb.session
         self._login = False
 
-    def _get(self, path: str):
+    def get(self, path: str):
 
         try:
             r = self.session.get(urljoin(self.DOMAIN, path), timeout=(6.1, 27))
@@ -582,13 +598,12 @@ class MTeam:
             r.raise_for_status()
         except requests.RequestException:
             print("failed.")
-            return
+        else:
+            print("ok.")
+            self._login = True
+            return self.get(path)
 
-        print("ok.")
-        self._login = True
-        return self._get(path)
-
-    def fetch(self) -> Iterator[Torrent]:
+    def scan_page(self) -> Iterator[Torrent]:
 
         from bs4 import BeautifulSoup
 
@@ -609,10 +624,9 @@ class MTeam:
 
         for page in self.pages:
             try:
-                soup = (
-                    tr.find_all("td", recursive=False)
-                    for tr in BeautifulSoup(self._get(page).content, "lxml").
-                    select("#form_torrent table.torrents > tr"))
+                soup = (tr.find_all("td", recursive=False)
+                        for tr in BeautifulSoup(self.get(page).content, "lxml").
+                        select("#form_torrent table.torrents > tr"))
                 row = next(soup)
             except AttributeError:
                 print(f"Failed: {page}", file=sys.stderr)
@@ -676,13 +690,6 @@ class MTeam:
                         title=title,
                     )
 
-    def download(self, downloadList: Sequence[Torrent]):
-        """Download torrents from mteam."""
-        try:
-            return {t.id: self._get(t.link).content for t in downloadList}
-        except AttributeError:
-            print(f"Downloading failed.", file=sys.stderr)
-
 
 class MPSolver:
     """Using Google OR-Tools to find the optimal combination of downloads and removals.
@@ -733,7 +740,8 @@ class MPSolver:
         model.Add(LinearExpr.ScalProd(pool, coef) <= qb.freeSpace)
 
         # downloads - removes(downloading) <= max_active_downloads - total_downloading
-        maxActive: int = qb.get_preference("max_active_downloads")
+        maxActive = (qb.get_preference("max_active_downloads")
+                     if downloadCand else 0)
         if maxActive > 0:
 
             # intermediate boolean variable
@@ -915,7 +923,7 @@ def read_config(configfile: Path):
 def main():
 
     join_root = Path(__file__).with_name
-    basic, mt = read_config(join_root("config.ini"))
+    basic, mteam = read_config(join_root("config.ini"))
 
     qb = qBittorrent(
         host=basic["host"],
@@ -926,37 +934,42 @@ def main():
         dead_thresh=basic.getint("dead_up_thresh"),
         datafile=join_root("data"),
     )
-    qb.clean_seeddir()
 
-    if qb.need_action() or _dryrun:
+    if qb.is_ready():
 
-        mteam = MTeam(
-            pages=mt["pages"].split(),
-            username=mt["username"],
-            password=mt["password"],
-            minPeer=(mt.getfloat("peer_slope"), mt.getfloat("peer_intercept")),
-            qb=qb,
-        )
-        solver = MPSolver(
-            removeCand=qb.get_remove_cands(),
-            downloadCand=mteam.fetch(),
-            qb=qb,
-        )
-        solver.solve()
+        qb.clean_seeddir()
 
-        qb.remove_torrents(solver.removeList)
-        qb.add_torrent(solver.downloadList,
-                       content=mteam.download(solver.downloadList))
-        solver.report()
+        if qb.requires_download():
+            mteam = MTeam(
+                pages=mteam["pages"].split(),
+                username=mteam["username"],
+                password=mteam["password"],
+                minPeer=(mteam.getfloat("peer_slope"),
+                         mteam.getfloat("peer_intercept")),
+                qb=qb,
+            )
+            downloadCand = tuple(mteam.scan_page())
+        else:
+            downloadCand = ()
+
+        if downloadCand or qb.requires_cleanup():
+
+            solver = MPSolver(
+                removeCand=qb.get_remove_cands(),
+                downloadCand=downloadCand,
+                qb=qb,
+            )
+            solver.solve()
+
+            qb.remove_torrents(solver.removeList)
+            qb.add_torrent(solver.downloadList, mteam)
+            solver.report()
 
     qb.resume_paused()
     qb.dump_data()
 
     if logger:
-        logger.write(
-            join_root("logfile.log"),
-            copy_to=basic["log_backup_dir"],
-        )
+        logger.write(join_root("logfile.log"), basic["log_backup_dir"])
 
 
 logger = Logger()
