@@ -369,7 +369,7 @@ class qBittorrent:
         if not self.expired.empty:
             removes = removes.to_dict()
             removes.update(
-                {k: None for k in self.expired if torrents[k]["progress"] != 1})
+                {k: None for k in self.expired if torrents[k]["progress"] < 1})
 
         # exclude those added in less than 1 day
         yesterday = datetime.now().timestamp() - 86400
