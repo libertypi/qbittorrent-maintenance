@@ -135,7 +135,7 @@ class qBittorrent:
         try:
             maindata: Dict[str, dict] = self._request("sync/maindata").json()
         except (requests.RequestException, ValueError) as e:
-            print(f"API communication error: {e}", file=sys.stderr)
+            print(f"API error: {e}", file=sys.stderr)
             sys.exit(1)
 
         self.server_state = d = maindata["server_state"]
@@ -678,7 +678,6 @@ class MTeam:
 
     def download(self, downloadList: Sequence[Torrent]):
         """Download torrents from mteam."""
-        print("Downloading torrents...")
         try:
             return {t.id: self._get(t.link).content for t in downloadList}
         except AttributeError:
