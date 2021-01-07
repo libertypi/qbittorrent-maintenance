@@ -471,7 +471,7 @@ class qBittorrent:
                 return
             if self.server_state["queueing"]:
                 # In case the queue being blocked by stalled torrents, it is
-                # safer to set new torrents top priority.
+                # safer setting new torrents to top priority.
                 self._request(
                     "torrents/topPrio",
                     ignore_error=True,
