@@ -112,10 +112,9 @@ class qBittorrent:
     session: requests.Session
     expired: pd.Index
 
-    _busy = {
-        "checkingUP", "allocating", "checkingDL", "checkingResumeData", "moving"
-    }
-    _pause = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
+    _busy = {"checkingUP", "checkingDL", "checkingResumeData", "moving"}
+    _paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
+    _downloading = {"downloading", "metaDL", "allocating"}
 
     def __init__(self, *, host: str, seed_dir: str, disk_quota: float,
                  up_thresh: int, dl_thresh: int, dead_thresh: int,
@@ -302,8 +301,7 @@ class qBittorrent:
             (speeds < self._speed_thresh).all() and
             not self.server_state["use_alt_speed_limits"] and
             not 0 < self.server_state["up_rate_limit"] < self._speed_thresh[0]
-            or self.expired.size > 1
-        ) and "queuedDL" not in self.state_counter or _dryrun
+            or self.expired.size > 1) or _dryrun
 
     def requires_remove(self) -> bool:
         """Whether some torrents may need to be deleted.
@@ -397,19 +395,41 @@ class qBittorrent:
                 weight=v,
             )
 
+    def get_max_dl(self):
+        """Max download slots available.
+
+        Returns: None if unlimited. max_active_downloads - current downloading,
+        otherwise. value always >= 0.
+
+        Torrents in stalledDL state are not counted because whether it is
+        subjected to limits depends on `dont_count_slow_torrents` setting and
+        thresholds. We would ensure new torrents got higher priority afterwards.
+        """
+        if self.server_state["queueing"]:
+            max_dl: int = self.get_pref("max_active_downloads")
+            if max_dl > 0:
+                ct = self.state_counter
+                max_dl -= sum(ct[k] for k in self._downloading)
+                return max_dl if max_dl > 0 else 0
+
+    def get_pref(self, key: str):
+        """Query qBittorrent preferences by key."""
+        p = self._preferences
+        if p is None:
+            p = self._preferences = self._request("app/preferences").json()
+        return p[key]
+
     def remove_torrents(self, removeList: Sequence[Removable]):
         """Remove torrents and delete files."""
 
         if not removeList:
             return
         if not _dryrun:
-            self._request(
-                "torrents/delete",
-                params={
-                    "hashes": "|".join(t.hash for t in removeList),
-                    "deleteFiles": True
-                },
-            )
+            params = {
+                "hashes": "|".join(t.hash for t in removeList),
+                "deleteFiles": True
+            }
+            self._request("torrents/delete", params=params)
         for t in removeList:
             logger.record("Remove", t.size, t.title)
 
@@ -418,7 +438,7 @@ class qBittorrent:
 
         `downloader` should have a `get` method which takes a path and returns a
         requests response object. Torrents info is recorded into history
-        afterwards.
+        succesfully uploaded.
         """
 
         if not downloadList:
@@ -437,6 +457,15 @@ class qBittorrent:
             except requests.RequestException as e:
                 logger.record("Error", None, e)
                 return
+            if self.server_state["queueing"]:
+                # Torrents in stalled state are not counted by get_max_dl, but
+                # they could potentially block the queue. It is safer to just
+                # set new torrents top priorities.
+                params = {"hashes": "|".join(t.hash for t in downloadList)}
+                try:
+                    self._request("torrents/topPrio", params=params)
+                except requests.RequestException:
+                    pass
 
         from torrentool.api import Torrent as TorrentParser
         from torrentool.exceptions import TorrentoolException
@@ -474,16 +503,9 @@ class qBittorrent:
         # set n hours of silence
         self.silence = NOW + timedelta(hours=len(downloadList))
 
-    def get_preference(self, key: str):
-        """Query qBittorrent preferences by key."""
-        p = self._preferences
-        if p is None:
-            p = self._preferences = self._request("app/preferences").json()
-        return p[key]
-
     def resume_paused(self):
         """If any torrent is paused, for any reason, resume."""
-        if not self._pause.isdisjoint(self.state_counter):
+        if not self._paused.isdisjoint(self.state_counter):
             print("Resume torrents.")
             if not _dryrun:
                 self._request("torrents/resume", params={"hashes": "all"})
@@ -693,12 +715,9 @@ class MPSolver:
 
         -   infeasible when `usable_space` + `removed_size` < 0
 
-    -   `downloads` - `removes[downloading]` <= `max_active_downloads` - `total_downloading`
+    -   `downloads` - `removes[downloading]` <= max download slot
 
         -   never exceed qBittorrent max_active_downloads limit, if exists.
-        -   to avoid problems when max_active_downloads < total_downloading,
-            only implemented when downloads > 0. If we were to add new torrents,
-            we ensure overall downloading bellow limit. Otherwise, leave it be.
 
     ### Objective:
     -   Maximize: `download_peer` - `removed_peer`
@@ -714,54 +733,39 @@ class MPSolver:
 
     def _solve(self):
 
-        from ortools.sat.python.cp_model import (FEASIBLE, OPTIMAL, CpModel,
-                                                 CpSolver, LinearExpr)
+        from ortools.sat.python import cp_model
 
         downloadCand = self.downloadCand
         removeCand = self.removeCand
         qb = self.qb
+        ScalProd = cp_model.LinearExpr.ScalProd
 
-        model = CpModel()
+        model = cp_model.CpModel()
 
         # download_size - removed_size <= usable_space
         coef = [t.size for t in downloadCand]
         coef.extend(-t.size for t in removeCand)
         pool = tuple(model.NewBoolVar(f"{i}") for i in range(len(coef)))
-        model.Add(LinearExpr.ScalProd(pool, coef) <= qb.usable_space)
+        model.Add(ScalProd(pool, coef) <= qb.usable_space)
 
-        # downloads - removes(downloading) <= max_active_downloads - total_downloading
-        maxActive = (qb.get_preference("max_active_downloads")
-                     if downloadCand else 0)
-        if maxActive > 0:
-
-            # intermediate boolean variable
-            has_new = model.NewBoolVar("has_new")
-
-            # implement has_new == (Sum(downloads) > 0)
-            d = len(downloadCand)
-            model.Add(LinearExpr.Sum(
-                pool[i] for i in range(d)) > 0).OnlyEnforceIf(has_new)
-            model.Add(LinearExpr.Sum(
-                pool[i] for i in range(d)) == 0).OnlyEnforceIf(has_new.Not())
-
-            # enforce only if has_new is true
-            coef = [1] * d
-            coef.extend(-(t.state == "downloading") for t in removeCand)
-            model.Add(
-                LinearExpr.ScalProd(pool, coef) <= maxActive -
-                qb.state_counter["downloading"]).OnlyEnforceIf(has_new)
+        # downloads - removes(downloading) <= max download slot
+        max_dl = qb.get_max_dl() if downloadCand else None
+        if max_dl is not None:
+            coef = [1] * len(downloadCand)
+            coef.extend(-(t.state in qb._downloading) for t in removeCand)
+            model.Add(ScalProd(pool, coef) <= max_dl)
 
         # Maximize: download_peer - removed_peer
         factor = sum(t.peer for t in removeCand if t.weight == 1) + 1
         coef = [t.peer * factor for t in downloadCand]
         coef.extend(-t.peer * (factor if t.weight is None else t.weight)
                     for t in removeCand)
-        model.Maximize(LinearExpr.ScalProd(pool, coef))
+        model.Maximize(ScalProd(pool, coef))
 
-        solver = CpSolver()
+        solver = cp_model.CpSolver()
         status = solver.Solve(model)
 
-        if status in (OPTIMAL, FEASIBLE):
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             self.status = {
                 "status": solver.StatusName(status),
                 "walltime": solver.WallTime(),
