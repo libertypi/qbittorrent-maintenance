@@ -112,9 +112,9 @@ class qBittorrent:
     session: requests.Session
     expired: pd.Index
 
-    _busy = {"checkingUP", "checkingDL", "checkingResumeData", "moving"}
-    _paused = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
-    _downloading = {"downloading", "metaDL", "allocating"}
+    _BUSY = {"checkingUP", "checkingDL", "checkingResumeData", "moving"}
+    _PAUSED = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
+    _DOWNLOADING = {"downloading", "metaDL", "allocating"}
 
     def __init__(self, *, host: str, seed_dir: str, disk_quota: float,
                  up_thresh: int, dl_thresh: int, dead_thresh: int,
@@ -135,8 +135,8 @@ class qBittorrent:
             sys.exit(f"API error: {e}")
 
         self.server_state = d = maindata["server_state"]
-        if d["connection_status"] not in ("connected", "firewalled"):
-            sys.exit("qBittorrent is not connected to the internet.")
+        if d["connection_status"] == "disconnected":
+            sys.exit("qBittorrent is disconnected from the internet.")
 
         self.torrents = d = maindata["torrents"]
         self.state_counter = Counter(v["state"] for v in d.values())
@@ -147,15 +147,26 @@ class qBittorrent:
         self._load_data()
         self._record()
 
-    def _request(self, path: str, *, method: str = "GET", **kwargs):
+    def _request(self,
+                 path: str,
+                 *,
+                 method: str = "GET",
+                 ignore_error: bool = False,
+                 **kwargs):
         """Communicate with qBittorrent API."""
 
-        res = requests.request(method,
-                               self._api_base + path,
-                               timeout=9.1,
-                               **kwargs)
-        res.raise_for_status()
-        return res
+        try:
+            res = requests.request(
+                method,
+                self._api_base + path,
+                timeout=9.1,
+                **kwargs,
+            )
+            res.raise_for_status()
+            return res
+        except requests.RequestException:
+            if not ignore_error:
+                raise
 
     def _load_data(self):
         """Load data objects from pickle."""
@@ -281,7 +292,7 @@ class qBittorrent:
         -   qBittorrent is busy checking, moving data...etc
         """
         return (self.silence <= NOW and
-                self._busy.isdisjoint(self.state_counter) or _dryrun)
+                self._BUSY.isdisjoint(self.state_counter) or _dryrun)
 
     def requires_download(self) -> bool:
         """Whether qBittorrent requires downloading new torrents.
@@ -398,18 +409,19 @@ class qBittorrent:
     def get_max_dl(self):
         """Max download slots available.
 
-        Returns: None if unlimited. max_active_downloads - current downloading,
-        otherwise. value always >= 0.
+        Returns: None if unlimited. Otherwise it is "max_active_downloads" -
+        "current downloading", always >= 0.
 
-        Torrents in stalledDL state are not counted because whether it is
+        Torrents in stalled-like states are not counted because whether they are
         subjected to limits depends on `dont_count_slow_torrents` setting and
-        thresholds. We would ensure new torrents got higher priority afterwards.
+        thresholds. We would promote new torrents to the top of the queue
+        afterwards.
         """
         if self.server_state["queueing"]:
             max_dl: int = self.get_pref("max_active_downloads")
             if max_dl > 0:
                 ct = self.state_counter
-                max_dl -= sum(ct[k] for k in self._downloading)
+                max_dl -= sum(ct[k] for k in self._DOWNLOADING)
                 return max_dl if max_dl > 0 else 0
 
     def get_pref(self, key: str):
@@ -437,8 +449,8 @@ class qBittorrent:
         """Download torrents and upload to qBittorrent.
 
         `downloader` should have a `get` method which takes a path and returns a
-        requests response object. Torrents info is recorded into history
-        succesfully uploaded.
+        requests response object. Torrents info is recorded into history after
+        succesful uploads.
         """
 
         if not downloadList:
@@ -458,14 +470,12 @@ class qBittorrent:
                 logger.record("Error", None, e)
                 return
             if self.server_state["queueing"]:
-                # Torrents in stalled state are not counted by get_max_dl, but
-                # they could potentially block the queue. It is safer to just
-                # set new torrents top priorities.
-                params = {"hashes": "|".join(t.hash for t in downloadList)}
-                try:
-                    self._request("torrents/topPrio", params=params)
-                except requests.RequestException:
-                    pass
+                # In case the queue being blocked by stalled torrents, it is
+                # safer to set new torrents top priority.
+                self._request(
+                    "torrents/topPrio",
+                    ignore_error=True,
+                    params={"hashes": "|".join(t.hash for t in downloadList)})
 
         from torrentool.api import Torrent as TorrentParser
         from torrentool.exceptions import TorrentoolException
@@ -505,10 +515,12 @@ class qBittorrent:
 
     def resume_paused(self):
         """If any torrent is paused, for any reason, resume."""
-        if not self._paused.isdisjoint(self.state_counter):
+        if not self._PAUSED.isdisjoint(self.state_counter):
             print("Resume torrents.")
             if not _dryrun:
-                self._request("torrents/resume", params={"hashes": "all"})
+                self._request("torrents/resume",
+                              ignore_error=True,
+                              params={"hashes": "all"})
 
     @property
     def usable_space(self) -> int:
@@ -751,8 +763,9 @@ class MPSolver:
         # downloads - removes(downloading) <= max download slot
         max_dl = qb.get_max_dl() if downloadCand else None
         if max_dl is not None:
+            dl_state = qb._DOWNLOADING
             coef = [1] * len(downloadCand)
-            coef.extend(-(t.state in qb._downloading) for t in removeCand)
+            coef.extend(-(t.state in dl_state) for t in removeCand)
             model.Add(ScalProd(pool, coef) <= max_dl)
 
         # Maximize: download_peer - removed_peer
