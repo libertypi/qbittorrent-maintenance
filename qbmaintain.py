@@ -8,7 +8,7 @@ from configparser import ConfigParser
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, Sequence
 from urllib.parse import urljoin
 
 # Beautifulsoup, ortools, jenkspy, torrentool are imported as needed
@@ -128,14 +128,11 @@ class qBittorrent:
         try:
             maindata: Dict[str, dict] = self._request("sync/maindata").json()
         except (requests.RequestException, ValueError) as e:
-            print(f"API error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(f"API error: {e}")
 
         self.server_state = d = maindata["server_state"]
         if d["connection_status"] not in ("connected", "firewalled"):
-            print("qBittorrent is not connected to the internet.",
-                  file=sys.stderr)
-            sys.exit(1)
+            sys.exit("qBittorrent is not connected to the internet.")
 
         self.torrents = d = maindata["torrents"]
         self.state_counter = Counter(v["state"] for v in d.values())
@@ -900,8 +897,7 @@ def read_config(configfile: Path):
                     sep="\n",
                 )
                 if not arg.startswith("-h"):
-                    print(f"\nerror: unrecognized argument: {arg}",
-                          file=sys.stderr)
+                    sys.exit(f"\nerror: unrecognized argument: {arg}")
                 sys.exit()
 
         return basic, parser["MTEAM"]
