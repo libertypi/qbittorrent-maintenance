@@ -164,8 +164,10 @@ class qBittorrent:
             )
             res.raise_for_status()
             return res
-        except requests.RequestException:
-            if not ignore_error:
+        except requests.RequestException as e:
+            if ignore_error:
+                print(e, file=sys.stderr)
+            else:
                 raise
 
     def _load_data(self):
