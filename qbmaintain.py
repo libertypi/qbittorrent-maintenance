@@ -535,7 +535,6 @@ class qBittorrent:
         hi = df.iloc[-1]
         lo = df.apply(pd.Series.first_valid_index)
         try:
-            speeds: pd.Series
             speeds = ((hi.values - df.lookup(lo, lo.index)) /
                       (hi.name - lo).dt.total_seconds())
             speeds.dropna(inplace=True)
@@ -578,12 +577,13 @@ class MTeam:
             print("Connection error:", e, file=sys.stderr)
             return
         except (requests.RequestException, AttributeError):
-            self.session = self.qb.init_session()
+            pass
 
         if self._login:
             return
 
         print("Logging in..", end="", flush=True)
+        self.session = self.qb.init_session()
         try:
             r = self.session.post(
                 url=self.DOMAIN + "takelogin.php",
@@ -631,9 +631,8 @@ class MTeam:
             except StopIteration:
                 print(f"CSS selector broken: {page}", file=sys.stderr)
                 continue
-            else:
-                print(
-                    f'Success: {page if len(page) <= 50 else page[:50]+"..."}')
+
+            print(f'Success: {page if len(page) <= 50 else page[:50]+"..."}')
 
             for i, td in enumerate(row):
                 title = td.find(title=True)
@@ -812,17 +811,6 @@ class MPSolver:
         for t in self.removeCand:
             print(f"[{humansize(t.size):>11}|{t.peer:4d}P] {t.title}")
 
-        print(sepSlim)
-        if isinstance(self.status, dict):
-            print(
-                "Solution: {status}. Walltime: {walltime:.5f}s. Objective value: {value}."
-                .format_map(self.status))
-        else:
-            print("CP-SAT solver cannot find an solution. Status:", self.status)
-
-        print("Free space after operation: {} => {}.".format(
-            humansize(freeSpace), humansize(finalFreeSpace)))
-
         for prefix in "remove", "download":
             final = getattr(self, prefix + "List")
             cand = getattr(self, prefix + "Cand")
@@ -837,6 +825,18 @@ class MPSolver:
             ))
             for t in final:
                 print(f"[{humansize(t.size):>11}|{t.peer:4d}P] {t.title}")
+
+        print(sepSlim)
+        if isinstance(self.status, dict):
+            print(
+                "Solution: {status}. Walltime: {walltime:.5f}s. Objective value: {value}."
+                .format_map(self.status))
+        else:
+            print(
+                f"CP-SAT solver cannot find an solution. Status: {self.status}")
+
+        print("Free space after operation: {} => {}.".format(
+            humansize(freeSpace), humansize(finalFreeSpace)))
 
     @staticmethod
     def _sumsize(obj: Iterable[Torrent]) -> int:
@@ -906,6 +906,7 @@ def read_config(configfile: Path):
                 if not arg.startswith("-h"):
                     print(f"\nerror: unrecognized argument: {arg}",
                           file=sys.stderr)
+                    sys.exit(1)
                 sys.exit()
 
         return basic, parser["MTEAM"]
