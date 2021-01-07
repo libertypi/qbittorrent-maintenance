@@ -112,6 +112,11 @@ class qBittorrent:
     session: requests.Session
     expired: pd.Index
 
+    _busy = {
+        "checkingUP", "allocating", "checkingDL", "checkingResumeData", "moving"
+    }
+    _pause = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
+
     def __init__(self, *, host: str, seed_dir: str, disk_quota: float,
                  up_thresh: int, dl_thresh: int, dead_thresh: int,
                  datafile: Path):
@@ -269,10 +274,6 @@ class qBittorrent:
             self.history = pd.DataFrame(columns=("id", "add", "expire"))
             self.expired = self.history.index
 
-    _busy = {
-        "checkingUP", "allocating", "checkingDL", "checkingResumeData", "moving"
-    }
-
     def is_ready(self) -> bool:
         """Whether qBittorrent is ready for maintenance.
 
@@ -301,8 +302,8 @@ class qBittorrent:
             (speeds < self._speed_thresh).all() and
             not self.server_state["use_alt_speed_limits"] and
             not 0 < self.server_state["up_rate_limit"] < self._speed_thresh[0]
-            and "queuedDL" not in self.state_counter or self.expired.size > 1 or
-            _dryrun)
+            or self.expired.size > 1
+        ) and "queuedDL" not in self.state_counter or _dryrun
 
     def requires_remove(self) -> bool:
         """Whether some torrents may need to be deleted.
@@ -479,8 +480,6 @@ class qBittorrent:
         if p is None:
             p = self._preferences = self._request("app/preferences").json()
         return p[key]
-
-    _pause = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
 
     def resume_paused(self):
         """If any torrent is paused, for any reason, resume."""
@@ -697,10 +696,9 @@ class MPSolver:
     -   `downloads` - `removes[downloading]` <= `max_active_downloads` - `total_downloading`
 
         -   never exceed qBittorrent max_active_downloads limit, if exists.
-        -   to avoid problems when max_active_downloads < total_downloading
-            (i.e. torrents force started by user), only implemented when
-            downloads > 0. If we were to add new torrents, we ensure overall
-            downloading bellow limit. Otherwise, leave it be.
+        -   to avoid problems when max_active_downloads < total_downloading,
+            only implemented when downloads > 0. If we were to add new torrents,
+            we ensure overall downloading bellow limit. Otherwise, leave it be.
 
     ### Objective:
     -   Maximize: `download_peer` - `removed_peer`
