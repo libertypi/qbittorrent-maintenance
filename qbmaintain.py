@@ -312,7 +312,7 @@ class qBittorrent:
             (speeds < self._speed_thresh).all() and
             not self.server_state["use_alt_speed_limits"] and
             not 0 < self.server_state["up_rate_limit"] < self._speed_thresh[0]
-            or self.expired.size > 1) or _dryrun
+            or self.expired.size > 1 or _dryrun)
 
     def requires_remove(self) -> bool:
         """Whether some torrents may need to be deleted.
@@ -778,7 +778,7 @@ class MPSolver:
         solver = cp_model.CpSolver()
         status = solver.Solve(model)
 
-        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
             self.status = {
                 "status": solver.StatusName(status),
                 "walltime": solver.WallTime(),
