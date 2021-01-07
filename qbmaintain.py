@@ -141,7 +141,7 @@ class qBittorrent:
         self.state_counter = Counter(v["state"] for v in d.values())
         self._space_offset = (sum(v["amount_left"] for v in d.values()) +
                               disk_quota * BYTESIZE["GiB"])
-        self._freeSpace = self._preferences = None
+        self._usable_space = self._preferences = None
 
         self._load_data()
         self._record()
@@ -311,10 +311,10 @@ class qBittorrent:
         """Whether some torrents may need to be deleted.
 
         True if:
-        -   Space is bellow threshold
+        -   space is bellow threshold
         -   any limited-free torrent has expired
         """
-        return self.freeSpace < 0 or not self.expired.empty
+        return self.usable_space < 0 or not self.expired.empty
 
     def clean_seeddir(self):
         """Clean files in seed dir which does not belong to qb download list."""
@@ -332,7 +332,7 @@ class qBittorrent:
                     continue
 
                 print("Cleanup:", path)
-                self._freeSpace = None
+                self._usable_space = None
                 try:
                     if _dryrun:
                         pass
@@ -425,8 +425,9 @@ class qBittorrent:
 
         if not downloadList:
             return
+
+        downloader = downloader.get
         try:
-            downloader = downloader.get
             content = {t.id: downloader(t.link).content for t in downloadList}
         except AttributeError:
             print("Downloading failed.", file=sys.stderr)
@@ -492,23 +493,23 @@ class qBittorrent:
                 self._request("torrents/resume", params={"hashes": "all"})
 
     @property
-    def freeSpace(self) -> int:
-        """Return free space on seed_dir.
+    def usable_space(self) -> int:
+        """Return usable space on seed_dir.
 
-        `free_space` = `free_space_on_disk` - `disk_quota` - `amount_left_to_download`
+        `usable_space` = `free_space_on_disk` - `disk_quota` - `amount_left_to_download`
         """
-        f = self._freeSpace
-        if f is None:
-            real = self.server_state["free_space_on_disk"]
+        s = self._usable_space
+        if s is None:
+            free = self.server_state["free_space_on_disk"]
             try:
-                f = shutil.disk_usage(self.seed_dir).free
+                s = shutil.disk_usage(self.seed_dir).free
             except TypeError:
                 pass
             else:
-                if f > real:
-                    real = f
-            f = self._freeSpace = int(real - self._space_offset)
-        return f
+                if s > free:
+                    free = s
+            s = self._usable_space = int(free - self._space_offset)
+        return s
 
     @property
     def speeds(self):
@@ -544,19 +545,18 @@ class qBittorrent:
 
 
 class MTeam:
-    """A cumbersome MTeam downloader.
-
-    -   Minimum peer requirement subjects to:
-
-        Peer >= A * Size(GiB) + B
-
-        Where (A, B) is defined in config file and passed via `minPeer`.
-    """
+    """A cumbersome MTeam downloader."""
 
     DOMAIN = "https://pt.m-team.cc/"
 
     def __init__(self, *, username: str, password: str, peer_slope: float,
                  peer_intercept: float, qb: qBittorrent):
+        """Minimum peer requirement subjects to:
+
+        Peer >= A * Size(GiB) + B
+
+        Where A, B is defined by params `peer_slope` and `peer_intercept`.
+        """
 
         self._account = {"username": username, "password": password}
         self._A = peer_slope / BYTESIZE["GiB"]
@@ -693,9 +693,9 @@ class MPSolver:
     Maximize obtained peers under constraints.
 
     ### Constraints:
-    -   `download_size` - `removed_size` <= `free_space`
+    -   `download_size` - `removed_size` <= `usable_space`
 
-        -   infeasible when `free_space` < `-removed_size`.
+        -   infeasible when `usable_space` + `removed_size` < 0
 
     -   `downloads` - `removes[downloading]` <= `max_active_downloads` - `total_downloading`
 
@@ -712,13 +712,12 @@ class MPSolver:
     def __init__(self, *, removeCand: Iterable[Removable],
                  downloadCand: Iterable[Torrent], qb: qBittorrent):
 
-        self.downloadList = self.removeList = ()
         self.downloadCand = tuple(downloadCand)
         self.removeCand = tuple(removeCand)
         self.qb = qb
-        self.status = None
+        self._solve()
 
-    def solve(self):
+    def _solve(self):
 
         from ortools.sat.python.cp_model import (FEASIBLE, OPTIMAL, CpModel,
                                                  CpSolver, LinearExpr)
@@ -729,11 +728,11 @@ class MPSolver:
 
         model = CpModel()
 
-        # download_size - removed_size <= free_space
+        # download_size - removed_size <= usable_space
         coef = [t.size for t in downloadCand]
         coef.extend(-t.size for t in removeCand)
         pool = tuple(model.NewBoolVar(f"{i}") for i in range(len(coef)))
-        model.Add(LinearExpr.ScalProd(pool, coef) <= qb.freeSpace)
+        model.Add(LinearExpr.ScalProd(pool, coef) <= qb.usable_space)
 
         # downloads - removes(downloading) <= max_active_downloads - total_downloading
         maxActive = (qb.get_preference("max_active_downloads")
@@ -778,26 +777,23 @@ class MPSolver:
             self.removeList = tuple(t for t in removeCand if next(value))
         else:
             self.status = solver.StatusName(status)
+            self.downloadList = self.removeList = ()
 
     def report(self):
         """Print report to stdout."""
-
-        if self.status is None:
-            print("Solver did not start.", file=sys.stderr)
-            return
 
         sepSlim = "-" * 50
         removeCandSize = self._sumsize(self.removeCand)
         downloadCandSize = self._sumsize(self.downloadCand)
         removeSize = self._sumsize(self.removeList)
         downloadSize = self._sumsize(self.downloadList)
-        freeSpace = self.qb.freeSpace
-        finalFreeSpace = freeSpace + removeSize - downloadSize
+        usable_space = self.qb.usable_space
+        final_usable_space = usable_space + removeSize - downloadSize
 
         print(sepSlim)
-        print("Disk free space: {}. Max available: {}.".format(
-            humansize(freeSpace),
-            humansize(freeSpace + removeCandSize),
+        print("Usable space: {}. Max avail: {}.".format(
+            humansize(usable_space),
+            humansize(usable_space + removeCandSize),
         ))
         print("Download candidates: {}. Total: {}.".format(
             len(self.downloadCand),
@@ -815,8 +811,8 @@ class MPSolver:
             final = getattr(self, prefix + "List")
             cand = getattr(self, prefix + "Cand")
             size = locals()[prefix + "Size"]
-            print(sepSlim)
-            print("{}: {}/{}. Total: {}, {} peers.".format(
+            print("{}\n{}: {}/{}. Total: {}, {} peers.".format(
+                sepSlim,
                 prefix.capitalize(),
                 len(final),
                 len(cand),
@@ -835,8 +831,8 @@ class MPSolver:
             print(
                 f"CP-SAT solver cannot find an solution. Status: {self.status}")
 
-        print("Free space after operation: {} => {}.".format(
-            humansize(freeSpace), humansize(finalFreeSpace)))
+        print("Usable space after operation: {} => {}.".format(
+            humansize(usable_space), humansize(final_usable_space)))
 
     @staticmethod
     def _sumsize(obj: Iterable[Torrent]) -> int:
@@ -906,7 +902,6 @@ def read_config(configfile: Path):
                 if not arg.startswith("-h"):
                     print(f"\nerror: unrecognized argument: {arg}",
                           file=sys.stderr)
-                    sys.exit(1)
                 sys.exit()
 
         return basic, parser["MTEAM"]
@@ -956,7 +951,6 @@ def main():
                 downloadCand=downloadCand,
                 qb=qb,
             )
-            solver.solve()
 
             qb.remove_torrents(solver.removeList)
             if downloadCand:
