@@ -115,6 +115,7 @@ class qBittorrent:
     _BUSY = {"checkingUP", "checkingDL", "checkingResumeData", "moving"}
     _PAUSED = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
     _DOWNLOADING = {"downloading", "metaDL", "allocating"}
+    _STALED = {"stalledDL", "queuedDL"}
 
     def __init__(self, *, host: str, seed_dir: str, disk_quota: float,
                  up_thresh: int, dl_thresh: int, dead_thresh: int,
@@ -131,7 +132,7 @@ class qBittorrent:
         self._api_base = urljoin(host, "api/v2/")
         try:
             maindata: Dict[str, dict] = self._request("sync/maindata").json()
-        except (requests.RequestException, ValueError) as e:
+        except Exception as e:
             sys.exit(f"API error: {e}")
 
         self.server_state = d = maindata["server_state"]
@@ -139,10 +140,10 @@ class qBittorrent:
             sys.exit("qBittorrent is disconnected from the internet.")
 
         self.torrents = d = maindata["torrents"]
-        self.state_counter = Counter(v["state"] for v in d.values())
+        self.states = Counter(v["state"] for v in d.values())
         self._space_offset = (sum(v["amount_left"] for v in d.values()) +
                               disk_quota * BYTESIZE["GiB"])
-        self._usable_space = self._preferences = None
+        self._usable_space = self._pref = None
 
         self._load_data()
         self._record()
@@ -293,8 +294,8 @@ class qBittorrent:
         -   during silence period (explicitly set after a successful download)
         -   qBittorrent is busy checking, moving data...etc
         """
-        return (self.silence <= NOW and
-                self._BUSY.isdisjoint(self.state_counter) or _dryrun)
+        return self.silence <= NOW and self._BUSY.isdisjoint(
+            self.states) or _dryrun
 
     def requires_download(self) -> bool:
         """Whether qBittorrent requires downloading new torrents.
@@ -417,20 +418,20 @@ class qBittorrent:
         Torrents in stalled-like states are not counted because whether they are
         subjected to limits depends on `dont_count_slow_torrents` setting and
         thresholds. We would promote new torrents to the top of the queue
-        afterwards.
+        afterwards if such torrents exist.
         """
         if self.server_state["queueing"]:
             max_dl: int = self.get_pref("max_active_downloads")
             if max_dl > 0:
-                ct = self.state_counter
+                ct = self.states
                 max_dl -= sum(ct[k] for k in self._DOWNLOADING)
                 return max_dl if max_dl > 0 else 0
 
     def get_pref(self, key: str):
         """Query qBittorrent preferences by key."""
-        p = self._preferences
+        p = self._pref
         if p is None:
-            p = self._preferences = self._request("app/preferences").json()
+            p = self._pref = self._request("app/preferences").json()
         return p[key]
 
     def remove_torrents(self, removeList: Sequence[Removable]):
@@ -471,9 +472,10 @@ class qBittorrent:
             except requests.RequestException as e:
                 logger.record("Error", None, e)
                 return
-            if self.server_state["queueing"]:
-                # In case the queue being blocked by stalled torrents, it is
-                # safer to set new torrents to top priority.
+            if not self._STALED.isdisjoint(
+                    self.states) and self.server_state["queueing"]:
+                # In case the queue being blocked by stalled torrents, set new
+                # torrents to the top priority.
                 self._request(
                     "torrents/topPrio",
                     ignore_error=True,
@@ -517,7 +519,7 @@ class qBittorrent:
 
     def resume_paused(self):
         """If any torrent is paused, for any reason, resume."""
-        if not self._PAUSED.isdisjoint(self.state_counter):
+        if not self._PAUSED.isdisjoint(self.states):
             print("Resume torrents.")
             if not _dryrun:
                 self._request("torrents/resume",
