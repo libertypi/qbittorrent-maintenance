@@ -345,8 +345,8 @@ class qBittorrent:
                     if _dryrun:
                         pass
                     elif path.is_dir():
-                        # has to set ignore_errors=True so that one failure does
-                        # not blow the whole thing up
+                        # have to set ignore_errors=True so that one failure
+                        # does not blow the whole thing up
                         shutil.rmtree(path, ignore_errors=True)
                     else:
                         os.unlink(path)
