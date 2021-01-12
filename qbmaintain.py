@@ -333,16 +333,14 @@ class qBittorrent:
         if seed_dir is None:
             return
 
-        torrents = {v["name"] for v in self.torrents.values()}
+        names = {v["name"] for v in self.torrents.values()}
         for name in os.listdir(seed_dir):
 
-            if name not in torrents:
-                path = seed_dir.joinpath(name)
-                if path.suffix == ".!qB" and path.stem in torrents:
-                    continue
+            if name not in names and re.sub(r"\.!qB$", "", name) not in names:
 
-                print("Cleanup:", path)
+                path = seed_dir.joinpath(name)
                 self._usable_space = None
+                print("Cleanup:", path)
                 try:
                     if _dryrun:
                         pass
