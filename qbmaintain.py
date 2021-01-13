@@ -457,6 +457,7 @@ class qBittorrent:
         if not downloadList:
             return
 
+        print("Downloading torrents...")
         downloader = downloader.get
         try:
             content = {t.id: downloader(t.link).content for t in downloadList}
