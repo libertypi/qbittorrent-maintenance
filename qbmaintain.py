@@ -185,7 +185,7 @@ class qBittorrent:
                 return
         except FileNotFoundError:
             pass
-        except (OSError, pickle.PickleError, TypeError) as e:
+        except Exception as e:
             print(f"Reading data failed: {e}", file=sys.stderr)
             if not _dryrun:
                 try:
@@ -207,7 +207,7 @@ class qBittorrent:
             with open(self.datafile, "wb") as f:
                 pickle.dump((self.server_data, self.torrent_data, self.history,
                              self.silence, self.session), f)
-        except (OSError, pickle.PickleError) as e:
+        except Exception as e:
             msg = f"Saving data failed: {e}"
             logger.record("Error", None, msg)
             print(msg, file=sys.stderr)
@@ -253,7 +253,7 @@ class qBittorrent:
                 before=NOW - timedelta(hours=1),
                 copy=False,
             ).append(app_row)
-        except (AttributeError, ValueError):
+        except Exception:
             self.server_data = app_row
 
         # upload speeds of each torrent
@@ -272,7 +272,7 @@ class qBittorrent:
                 before=NOW - timedelta(days=1),
                 copy=False,
             ).append(torrent_row)
-        except (AttributeError, ValueError):
+        except Exception:
             self.torrent_data = torrent_row
 
         # expiration records of current torrents
@@ -283,7 +283,7 @@ class qBittorrent:
             self.expired = df.index[df.values <= NOW]
             if not self.expired.empty:
                 self.history.loc[self.expired, "expire"] = pd.NaT
-        except (AttributeError, ValueError):
+        except Exception:
             self.history = pd.DataFrame(columns=("id", "add", "expire"))
             self.expired = self.history.index
 
@@ -481,7 +481,6 @@ class qBittorrent:
                     params={"hashes": "|".join(t.hash for t in downloadList)})
 
         from torrentool.api import Torrent as TorrentParser
-        from torrentool.exceptions import TorrentoolException
 
         # convert timedelta to timestamp
         # read hash and name from torrent file
@@ -495,8 +494,8 @@ class qBittorrent:
                 t.hash = torrent.info_hash
                 t.title = torrent.name
                 t.size = torrent.total_size
-            except TorrentoolException as e:
-                print("Torrentool error:", e, file=sys.stderr)
+            except Exception as e:
+                print(f"Torrentool error: {e}", file=sys.stderr)
 
             logger.record("Download", t.size, t.title)
 
@@ -609,7 +608,7 @@ class MTeam:
                 requests.Timeout) as e:
             print("Connection error:", e, file=sys.stderr)
             return
-        except (requests.RequestException, AttributeError):
+        except Exception:
             pass
 
         if self._login:
@@ -655,14 +654,18 @@ class MTeam:
         for page in pages:
             try:
                 soup = (tr.find_all("td", recursive=False)
-                        for tr in BeautifulSoup(self.get(page).content, "lxml").
-                        select("#form_torrent table.torrents > tr"))
+                        for tr in BeautifulSoup(
+                            self.get(page).content, "html.parser").select(
+                                "#form_torrent table.torrents > tr"))
                 row = next(soup)
             except AttributeError:
                 print(f"Failed: {page}", file=sys.stderr)
                 continue
             except StopIteration:
                 print(f"CSS selector broken: {page}", file=sys.stderr)
+                continue
+            except Exception as e:
+                print(f"Error: {e}", file=sys.stderr)
                 continue
 
             print(f'Success: {page if len(page) <= 50 else page[:50]+"..."}')
@@ -741,20 +744,13 @@ class MPSolver:
     def __init__(self, *, removeCand: Iterable[Removable],
                  downloadCand: Iterable[Torrent], qb: qBittorrent):
 
-        self.downloadCand = tuple(downloadCand)
-        self.removeCand = tuple(removeCand)
+        self.downloadCand = downloadCand = tuple(downloadCand)
+        self.removeCand = removeCand = tuple(removeCand)
         self.qb = qb
-        self._solve()
-
-    def _solve(self):
 
         from ortools.sat.python import cp_model
 
-        downloadCand = self.downloadCand
-        removeCand = self.removeCand
-        qb = self.qb
         ScalProd = cp_model.LinearExpr.ScalProd
-
         model = cp_model.CpModel()
 
         # download_size - removed_size <= usable_space
@@ -782,16 +778,15 @@ class MPSolver:
         status = solver.Solve(model)
 
         if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-            self.status = {
-                "status": solver.StatusName(status),
-                "walltime": solver.WallTime(),
-                "value": solver.ObjectiveValue(),
-            }
+            self.status = "Solution: {}. Walltime: {:.5f}s. Objective value: {}.".format(
+                solver.StatusName(status), solver.WallTime(),
+                solver.ObjectiveValue())
             value = map(solver.BooleanValue, pool)
             self.downloadList = tuple(t for t in downloadCand if next(value))
             self.removeList = tuple(t for t in removeCand if next(value))
         else:
-            self.status = solver.StatusName(status)
+            self.status = "CP-SAT solver cannot find an solution. Status: {}".format(
+                solver.StatusName(status))
             self.downloadList = self.removeList = ()
 
     def report(self):
@@ -838,14 +833,7 @@ class MPSolver:
                 print(f"[{humansize(t.size):>11}|{t.peer:4d}P] {t.title}")
 
         print(sepSlim)
-        if isinstance(self.status, dict):
-            print(
-                "Solution: {status}. Walltime: {walltime:.5f}s. Objective value: {value}."
-                .format_map(self.status))
-        else:
-            print(
-                f"CP-SAT solver cannot find an solution. Status: {self.status}")
-
+        print(self.status)
         print("Usable space after operation: {} => {}.".format(
             humansize(usable_space), humansize(final_usable_space)))
 
