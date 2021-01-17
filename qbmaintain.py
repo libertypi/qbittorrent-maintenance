@@ -665,9 +665,6 @@ class MTeam:
             except StopIteration:
                 print(f"CSS selector broken: {page}", file=sys.stderr)
                 continue
-            except Exception as e:
-                print(e, file=sys.stderr)
-                continue
 
             for i, td in enumerate(row):
                 title = td.find(title=True)
