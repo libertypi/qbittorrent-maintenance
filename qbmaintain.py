@@ -447,7 +447,7 @@ class qBittorrent:
         for t in removeList:
             logger.record("Remove", t.size, t.title)
 
-        self.silence = NOW + timedelta(minutes=max(len(removeList) * 15, 30))
+        self.silence = NOW + timedelta(minutes=30)
 
     def add_torrent(self, downloadList: Sequence[Torrent], downloader):
         """Download torrents and upload to qBittorrent.
