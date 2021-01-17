@@ -457,13 +457,11 @@ class qBittorrent:
 
         if not downloadList:
             return
-
         downloader = downloader.get
         try:
             content = {t.id: downloader(t.link).content for t in downloadList}
         except AttributeError:
             return
-
         if not _dryrun:
             try:
                 self._request("torrents/add", method="POST", files=content)
@@ -602,7 +600,6 @@ class MTeam:
         print(f'Connecting: {url if len(url) <= 50 else url[:50]}...',
               end="",
               flush=True)
-
         try:
             r = self.session.get(url, timeout=(6.1, 27))
             r.raise_for_status()
