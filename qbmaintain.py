@@ -443,8 +443,13 @@ class qBittorrent:
                 "deleteFiles": True
             }
             self._request("torrents/delete", params=params)
+
+        history = self.history
         for t in removeList:
             logger.record("Remove", t.size, t.title)
+            history.loc[t.hash, "expire"] = pd.NaT
+
+        self.silence = NOW + timedelta(minutes=max(len(removeList) * 15, 30))
 
     def add_torrent(self, downloadList: Sequence[Torrent], downloader):
         """Download torrents and upload to qBittorrent.
