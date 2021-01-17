@@ -443,10 +443,8 @@ class qBittorrent:
                 "deleteFiles": True
             }
             self._request("torrents/delete", params=params)
-
         for t in removeList:
             logger.record("Remove", t.size, t.title)
-
         self.silence = NOW + timedelta(minutes=30)
 
     def add_torrent(self, downloadList: Sequence[Torrent], downloader):
