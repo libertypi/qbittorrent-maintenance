@@ -592,44 +592,51 @@ class MTeam:
         self._B = peer_intercept
         self.qb = qb
         self.session = qb.session
-        self._login = False
+        self._logged_in = None
 
     def get(self, path: str):
 
+        if self._logged_in is False:
+            return
+
         url = urljoin(self.DOMAIN, path)
-        print(f'Connecting: {url if len(url) <= 50 else url[:50]}...',
+        print(f'Connecting: {url if len(url) <= 60 else url[:61] + "[...]"}..',
               end="",
               flush=True)
+
         try:
             r = self.session.get(url, timeout=(6.1, 27))
             r.raise_for_status()
+        except (requests.ConnectionError, requests.HTTPError,
+                requests.Timeout) as e:
+            print(f"error: {e}", file=sys.stderr)
+            return
+        except Exception as e:
+            print(f"error: {e}", file=sys.stderr)
+            if self._logged_in:
+                return
+            self.session = self.qb.init_session()
+        else:
             if "/login.php" not in r.url:
                 print("ok")
                 return r
-        except (requests.ConnectionError, requests.HTTPError,
-                requests.Timeout) as e:
-            print(f"error: {e}")
-            return
-        except Exception as e:
-            print(f"error: {e}")
-
-        if self._login:
-            return
+            print("invalid login")
+            if self._logged_in:
+                self._logged_in = False
+                return
 
         print("logging in..", end="", flush=True)
-        self.session = self.qb.init_session()
         try:
             r = self.session.post(
                 url=self.DOMAIN + "takelogin.php",
                 data=self._account,
-                headers={"referer": self.DOMAIN + "login.php"},
-            )
+                headers={"referer": self.DOMAIN + "login.php"})
             r.raise_for_status()
         except requests.RequestException as e:
-            print(f"error: {e}")
+            print(f"error: {e}", file=sys.stderr)
         else:
+            self._logged_in = True
             print("ok")
-            self._login = True
             return self.get(path)
 
     def scan(self, pages: Iterable[str]) -> Iterator[Torrent]:
