@@ -587,16 +587,16 @@ class MTeam:
         Where A, B is defined by params `peer_slope` and `peer_intercept`.
         """
 
-        self._account = {"username": username, "password": password}
-        self._A = peer_slope / BYTESIZE["GiB"]
-        self._B = peer_intercept
+        self.account = {"username": username, "password": password}
+        self.A = peer_slope / BYTESIZE["GiB"]
+        self.B = peer_intercept
         self.qb = qb
         self.session = qb.session
-        self._logged_in = None
+        self.valid_login = None
 
     def get(self, path: str):
 
-        if self._logged_in is False:
+        if self.valid_login is False:
             return
 
         url = urljoin(self.DOMAIN, path)
@@ -612,30 +612,30 @@ class MTeam:
             print(f"error: {e}", file=sys.stderr)
             return
         except Exception as e:
-            print(f"error: {e}", file=sys.stderr)
-            if self._logged_in:
+            if self.valid_login:
+                print(f"error: {e}", file=sys.stderr)
                 return
             self.session = self.qb.init_session()
         else:
             if "/login.php" not in r.url:
                 print("ok")
                 return r
-            print("invalid login")
-            if self._logged_in:
-                self._logged_in = False
+            if self.valid_login:
+                print("invalid login")
+                self.valid_login = False
                 return
 
         print("logging in..", end="", flush=True)
         try:
             r = self.session.post(
                 url=self.DOMAIN + "takelogin.php",
-                data=self._account,
+                data=self.account,
                 headers={"referer": self.DOMAIN + "login.php"})
             r.raise_for_status()
         except requests.RequestException as e:
             print(f"error: {e}", file=sys.stderr)
         else:
-            self._logged_in = True
+            self.valid_login = True
             print("ok")
             return self.get(path)
 
@@ -645,8 +645,8 @@ class MTeam:
         from bs4 import BeautifulSoup
 
         cols = {}
-        A = self._A
-        B = self._B
+        A = self.A
+        B = self.B
         visited = set(self.qb.history["id"])
 
         sub_nondigit = re.compile(r"\D").sub
