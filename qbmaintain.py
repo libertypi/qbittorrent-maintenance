@@ -607,7 +607,7 @@ class MTeam:
             response.raise_for_status()
         except (requests.ConnectionError, requests.HTTPError,
                 requests.Timeout) as e:
-            print(f"error: {e}", file=sys.stderr)
+            print(e, file=sys.stderr)
             return
         except Exception as e:
             self.session = self.qb.init_session()
@@ -626,7 +626,7 @@ class MTeam:
             response = self.session.get(url, timeout=(6.1, 27))
             response.raise_for_status()
         except Exception as e:
-            print(f"error: {e}", file=sys.stderr)
+            print(e, file=sys.stderr)
         else:
             if "/login.php" not in response.url:
                 print("ok")
