@@ -291,7 +291,7 @@ class qBittorrent:
         """Whether qBittorrent is ready for maintenance.
 
         False if:
-        -   during silence period (explicitly set after a successful download)
+        -   during silence period (explicitly set after a successful action)
         -   qBittorrent is busy checking, moving data...etc
         """
         return self.silence <= NOW and self._BUSY.isdisjoint(
@@ -309,7 +309,7 @@ class qBittorrent:
         """
         speeds = self.speeds
         print("Last hour avg speed: UL: {}/s, DL: {}/s.".format(
-            *map(humansize, speeds)))
+            humansize(speeds[0]), humansize(speeds[1])))
 
         return (
             (speeds < self._speed_thresh).all() and
@@ -458,12 +458,10 @@ class qBittorrent:
         if not downloadList:
             return
 
-        print("Downloading torrents...")
         downloader = downloader.get
         try:
             content = {t.id: downloader(t.link).content for t in downloadList}
         except AttributeError:
-            print("Downloading failed.", file=sys.stderr)
             return
 
         if not _dryrun:
@@ -600,22 +598,28 @@ class MTeam:
 
     def get(self, path: str):
 
+        url = urljoin(self.DOMAIN, path)
+        print(f'Connecting: {url if len(url) <= 50 else url[:50]}...',
+              end="",
+              flush=True)
+
         try:
-            r = self.session.get(urljoin(self.DOMAIN, path), timeout=(6.1, 27))
+            r = self.session.get(url, timeout=(6.1, 27))
             r.raise_for_status()
             if "/login.php" not in r.url:
+                print("ok")
                 return r
         except (requests.ConnectionError, requests.HTTPError,
                 requests.Timeout) as e:
-            print("Connection error:", e, file=sys.stderr)
+            print(f"error: {e}")
             return
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"error: {e}")
 
         if self._login:
             return
 
-        print("Logging in..", end="", flush=True)
+        print("logging in..", end="", flush=True)
         self.session = self.qb.init_session()
         try:
             r = self.session.post(
@@ -624,10 +628,10 @@ class MTeam:
                 headers={"referer": self.DOMAIN + "login.php"},
             )
             r.raise_for_status()
-        except requests.RequestException:
-            print("failed.")
+        except requests.RequestException as e:
+            print(f"error: {e}")
         else:
-            print("ok.")
+            print("ok")
             self._login = True
             return self.get(path)
 
@@ -650,8 +654,6 @@ class MTeam:
         re_time = re.compile(
             r"^\W*限時：\W*(?:(\d+)\s*日)?\W*(?:(\d+)\s*時)?\W*(?:(\d+)\s*分)?")
 
-        print("Connecting M-Team...")
-
         for page in pages:
             try:
                 soup = (tr.find_all("td", recursive=False)
@@ -660,16 +662,13 @@ class MTeam:
                                 "#form_torrent table.torrents > tr"))
                 row = next(soup)
             except AttributeError:
-                print(f"Failed: {page}", file=sys.stderr)
                 continue
             except StopIteration:
                 print(f"CSS selector broken: {page}", file=sys.stderr)
                 continue
             except Exception as e:
-                print(f"Error: {e}", file=sys.stderr)
+                print(e, file=sys.stderr)
                 continue
-
-            print(f'Success: {page if len(page) <= 50 else page[:50]+"..."}')
 
             for i, td in enumerate(row):
                 title = td.find(title=True)
