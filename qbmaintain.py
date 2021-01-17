@@ -592,52 +592,47 @@ class MTeam:
         self.B = peer_intercept
         self.qb = qb
         self.session = qb.session
-        self.valid_login = None
+        self.invalid_login = False
 
     def get(self, path: str):
 
-        if self.valid_login is False:
+        if self.invalid_login:
             return
-
         url = urljoin(self.DOMAIN, path)
         print(f'Connecting: {url if len(url) <= 60 else url[:61] + "[...]"}..',
               end="",
               flush=True)
-
         try:
-            r = self.session.get(url, timeout=(6.1, 27))
-            r.raise_for_status()
+            response = self.session.get(url, timeout=(6.1, 27))
+            response.raise_for_status()
         except (requests.ConnectionError, requests.HTTPError,
                 requests.Timeout) as e:
             print(f"error: {e}", file=sys.stderr)
             return
         except Exception as e:
-            if self.valid_login:
-                print(f"error: {e}", file=sys.stderr)
-                return
             self.session = self.qb.init_session()
         else:
-            if "/login.php" not in r.url:
+            if "/login.php" not in response.url:
                 print("ok")
-                return r
-            if self.valid_login:
-                print("invalid login")
-                self.valid_login = False
-                return
+                return response
 
         print("logging in..", end="", flush=True)
         try:
-            r = self.session.post(
+            response = self.session.post(
                 url=self.DOMAIN + "takelogin.php",
                 data=self.account,
                 headers={"referer": self.DOMAIN + "login.php"})
-            r.raise_for_status()
-        except requests.RequestException as e:
+            response.raise_for_status()
+            response = self.session.get(url, timeout=(6.1, 27))
+            response.raise_for_status()
+        except Exception as e:
             print(f"error: {e}", file=sys.stderr)
         else:
-            self.valid_login = True
-            print("ok")
-            return self.get(path)
+            if "/login.php" not in response.url:
+                print("ok")
+                return response
+            self.invalid_login = True
+            print("invalid login", file=sys.stderr)
 
     def scan(self, pages: Iterable[str]) -> Iterator[Torrent]:
         '''Scan a list of pages and yield Torrent objects satisfy conditions.'''
