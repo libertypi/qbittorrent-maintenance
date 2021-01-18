@@ -153,7 +153,8 @@ class qBittorrent:
                               disk_quota * BYTESIZE["GiB"])
         self._record()
 
-        # Whether qBittorrent is ready for maintenance
+        # Whether qBittorrent is ready for maintenance. The value should be
+        # checked before taking any actions.
         # False if:
         #   during silence period (explicitly set after a successful action)
         #   qBittorrent is busy checking, moving data...etc
@@ -162,9 +163,9 @@ class qBittorrent:
 
         # Whether qBittorrent requires downloading new torrents.
         # True if:
-        # server speed is bellow threshold (not throttled by user)
-        # more than one limit-free torrents have expired
-        # in dry run mode
+        #   server speed is bellow threshold (not throttled by user)
+        #   more than one limit-free torrents have expired
+        #   in dry run mode
         speeds = self.speeds
         print("Last hour avg speed: UL: {}/s, DL: {}/s.".format(
             humansize(speeds[0]), humansize(speeds[1])))
@@ -486,9 +487,10 @@ class qBittorrent:
                     params={"hashes": "|".join(t.hash for t in downloadList)})
 
         from torrentool.api import Torrent as TorrentParser
-
         # convert timedelta to timestamp
         # read hash and name from torrent file
+        data = []
+        index = []
         for t in downloadList:
             if isinstance(t.expire, timedelta):
                 t.expire = NOW + t.expire
@@ -503,6 +505,8 @@ class qBittorrent:
                 print(f"Torrentool error: {e}", file=sys.stderr)
 
             logger.record("Download", t.size, t.title)
+            data.append((t.id, NOW, t.expire))
+            index.append(t.hash or t.id)
 
         # cleanup outdated records (older than 30 days and not in app)
         df = self.history
@@ -511,11 +515,7 @@ class qBittorrent:
 
         # save new info to dataframe
         self.history = df.append(
-            pd.DataFrame(
-                ((t.id, NOW, t.expire) for t in downloadList),
-                index=(t.hash or t.id for t in downloadList),
-                columns=("id", "add", "expire"),
-            ))
+            pd.DataFrame(data, index=index, columns=("id", "add", "expire")))
 
         # set n hours of silence
         self._set_silence(hours=len(downloadList))
