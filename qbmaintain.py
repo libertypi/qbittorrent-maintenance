@@ -3,6 +3,7 @@ import pickle
 import re
 import shutil
 import sys
+from argparse import ArgumentParser
 from collections import Counter
 from configparser import ConfigParser
 from dataclasses import dataclass
@@ -17,9 +18,7 @@ import requests
 from pandas import DataFrame, Timestamp
 
 _dryrun: bool = False
-
 NOW = Timestamp.now()
-
 BYTESIZE: Dict[str, int] = {
     k: v for kk, v in (
         ((c + "iB", c + "B"), 1024**i) for i, c in enumerate("KMGTP", 1))
@@ -171,8 +170,6 @@ class qBittorrent:
         self.requires_download = (not throttled and
                                   (speeds < speed_thresh).all() or
                                   self.expired.size > 1)
-        if _dryrun:
-            self.is_ready = self.requires_download = True
         # `requires_remove` is a method because it depends on the disk usage
         # that would be changed by calling `clean_seeddir`
 
@@ -848,12 +845,42 @@ def humansize(size: int) -> str:
     return "NaN"
 
 
-def read_config(configfile: Path):
+def parse_args():
+    '''Parse arguments from the command line.'''
+
+    parser = ArgumentParser(
+        description="qBittorrent Maintenance Tool by David Pi")
+    parser.add_argument(
+        "-d",
+        "--dryrun",
+        dest="dryrun",
+        action="store_true",
+        help="dry run",
+    )
+    parser.add_argument(
+        "-f",
+        "--force",
+        dest="force",
+        action="store_true",
+        help="force download",
+    )
+    parser.add_argument(
+        "-r",
+        "--remote",
+        dest="remote",
+        action="store_true",
+        help="override [DEFAULT] config section with [DEBUG]",
+    )
+    return parser.parse_args()
+
+
+def parse_config(configfile: Path):
     """Read or create config file."""
 
-    global _dryrun
-
     parser = ConfigParser()
+    if parser.read(configfile, encoding="utf-8"):
+        return parser
+
     parser["DEFAULT"] = {
         "host": "http://localhost/",
         "seed_dir": "",
@@ -874,61 +901,39 @@ def read_config(configfile: Path):
         "host": "http://localhost",
         "seed_dir": "",
     }
-
-    if parser.read(configfile, encoding="utf-8"):
-
-        basic = parser["DEFAULT"]
-
-        for arg in sys.argv[1:]:
-            if arg.startswith("-d"):
-                _dryrun = True
-            elif arg.startswith("-r"):
-                _dryrun = True
-                basic = parser["DEBUG"]
-            else:
-                print(
-                    "qBittorrent Maintenance Tool",
-                    "Copyright: David Pi",
-                    "",
-                    "optional arguments:",
-                    "  -h    print this message and exit",
-                    "  -d    dry run",
-                    "  -r    dry run with [DEBUG] config",
-                    sep="\n",
-                )
-                if not arg.startswith("-h"):
-                    sys.exit(f"\nerror: unrecognized argument: {arg}")
-                sys.exit()
-
-        return basic, parser["MTEAM"]
-
     with open(configfile, "w", encoding="utf-8") as f:
         parser.write(f)
 
-    print(f'Please edit "{configfile}" before running me again.')
-    sys.exit()
+    sys.exit(f'Please edit "{configfile}" before running me again.')
 
 
 def main():
 
+    global _dryrun
+
+    args = parse_args()
     join_root = Path(__file__).with_name
-    basic, mt = read_config(join_root("config.ini"))
+    config = parse_config(join_root("config.ini"))
+
+    mt = config["MTEAM"]
+    config = config["DEBUG"] if args.remote else config["DEFAULT"]
+    _dryrun = args.dryrun
 
     qb = qBittorrent(
-        host=basic["host"],
-        seed_dir=basic["seed_dir"],
-        disk_quota=basic.getfloat("disk_quota"),
-        up_thresh=basic.getint("up_rate_thresh"),
-        dl_thresh=basic.getint("dl_rate_thresh"),
-        dead_thresh=basic.getint("dead_up_thresh"),
+        host=config["host"],
+        seed_dir=config["seed_dir"],
+        disk_quota=config.getfloat("disk_quota"),
+        up_thresh=config.getint("up_rate_thresh"),
+        dl_thresh=config.getint("dl_rate_thresh"),
+        dead_thresh=config.getint("dead_up_thresh"),
         datafile=join_root("data"),
     )
 
-    if qb.is_ready:
+    if qb.is_ready or args.force:
 
         qb.clean_seeddir()
 
-        if qb.requires_download:
+        if qb.requires_download or args.force:
             mteam = MTeam(
                 username=mt["username"],
                 password=mt["password"],
@@ -941,7 +946,6 @@ def main():
             downloadCand = ()
 
         if downloadCand or qb.requires_remove():
-
             solver = MPSolver(
                 removeCand=qb.get_remove_cands(),
                 downloadCand=downloadCand,
@@ -956,7 +960,7 @@ def main():
     qb.dump_data()
 
     if logger:
-        logger.write(join_root("logfile.log"), basic["log_backup_dir"])
+        logger.write(join_root("logfile.log"), config["log_backup_dir"])
 
 
 logger = Logger()
