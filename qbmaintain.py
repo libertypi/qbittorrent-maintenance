@@ -273,7 +273,6 @@ class qBittorrent:
             last = df.iloc[-1]
             if last.name >= NOW or (last.values > app_row.values).all():
                 raise ValueError
-
             self.server_data = df.truncate(
                 before=NOW - timedelta(hours=1),
                 copy=False,
@@ -287,12 +286,10 @@ class qBittorrent:
             last = df.iloc[-1]
             if last.name >= NOW or last.gt(torrent_row.iloc[0]).all():
                 raise ValueError
-
             delete = df.columns.difference(torrent_row.columns)
             if not delete.empty:
                 df.drop(columns=delete, inplace=True, errors="ignore")
                 df.dropna(how="all", inplace=True)
-
             self.torrent_data = df.truncate(
                 before=NOW - timedelta(days=1),
                 copy=False,
@@ -304,7 +301,6 @@ class qBittorrent:
         df = self.history
         try:
             df = df.loc[df.index.isin(torrent_row.columns), "expire"]
-
             self.expired = df.index[df.values <= NOW]
             if not self.expired.empty:
                 self.history.loc[self.expired, "expire"] = pd.NaT
@@ -318,12 +314,15 @@ class qBittorrent:
         seed_dir = self.seed_dir
         if seed_dir is None:
             return
-
+        try:
+            listdir = os.listdir(seed_dir)
+        except OSError as e:
+            print(e, file=sys.stderr)
+            return
         names = {v["name"] for v in self.torrents.values()}
-        for name in os.listdir(seed_dir):
 
+        for name in listdir:
             if name not in names and re.sub(r"\.!qB$", "", name) not in names:
-
                 path = seed_dir.joinpath(name)
                 self._usable_space = None
                 print("Cleanup:", path)
