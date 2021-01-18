@@ -111,6 +111,8 @@ class qBittorrent:
     silence: pd.Timestamp
     session: requests.Session
     expired: pd.Index
+    is_ready: bool
+    requires_download: bool
 
     _BUSY = {"checkingUP", "checkingDL", "checkingResumeData", "moving"}
     _PAUSED = {"error", "missingFiles", "pausedUP", "pausedDL", "unknown"}
@@ -121,15 +123,15 @@ class qBittorrent:
                  up_thresh: int, dl_thresh: int, dead_thresh: int,
                  datafile: Path):
 
-        self.seed_dir = Path(seed_dir) if seed_dir else None
-        self.datafile = (datafile
-                         if isinstance(datafile, Path) else Path(datafile))
-
-        self._speed_thresh = (up_thresh * BYTESIZE["KiB"],
-                              dl_thresh * BYTESIZE["KiB"])
-        self._dead_thresh = dead_thresh * BYTESIZE["KiB"]
-
         self._api_base = urljoin(host, "api/v2/")
+        self.seed_dir = Path(seed_dir) if seed_dir else None
+        speed_thresh = (up_thresh * BYTESIZE["KiB"],
+                        dl_thresh * BYTESIZE["KiB"])
+        self._dead_thresh = dead_thresh * BYTESIZE["KiB"]
+        self._datafile = datafile
+        self._usable_space = self._pref = None
+        self._load_data()
+
         try:
             maindata: Dict[str, dict] = self._request("sync/maindata").json()
         except Exception as e:
@@ -138,15 +140,41 @@ class qBittorrent:
         self.server_state = d = maindata["server_state"]
         if d["connection_status"] == "disconnected":
             sys.exit("qBittorrent is disconnected from the internet.")
+        if (d["use_alt_speed_limits"] or
+                0 < d["up_rate_limit"] < speed_thresh[0]):
+            not_throttled = False
+            self._set_silence(hours=1)
+        else:
+            not_throttled = True
 
         self.torrents = d = maindata["torrents"]
         self.states = Counter(v["state"] for v in d.values())
         self._space_offset = (sum(v["amount_left"] for v in d.values()) +
                               disk_quota * BYTESIZE["GiB"])
-        self._usable_space = self._pref = None
-
-        self._load_data()
         self._record()
+
+        # Whether qBittorrent is ready for maintenance
+        # False if:
+        #   during silence period (explicitly set after a successful action)
+        #   qBittorrent is busy checking, moving data...etc
+        self.is_ready = (self.silence <= NOW and
+                         self._BUSY.isdisjoint(self.states))
+
+        # Whether qBittorrent requires downloading new torrents.
+        # True if:
+        # server speed is bellow threshold (not throttled by user)
+        # more than one limit-free torrents have expired
+        # in dry run mode
+        speeds = self.speeds
+        print("Last hour avg speed: UL: {}/s, DL: {}/s.".format(
+            humansize(speeds[0]), humansize(speeds[1])))
+        self.requires_download = (not_throttled and
+                                  (speeds < speed_thresh).all() or
+                                  self.expired.size > 1)
+        if _dryrun:
+            self.is_ready = self.requires_download = True
+        # `requires_remove` is a method because it depends on the disk usage
+        # that would be changed by calling `clean_seeddir`
 
     def _request(self,
                  path: str,
@@ -177,7 +205,7 @@ class qBittorrent:
         types = (pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Timestamp,
                  requests.Session)
         try:
-            with open(self.datafile, mode="rb") as f:
+            with open(self._datafile, mode="rb") as f:
                 data = pickle.load(f)
             if all(map(isinstance, data, types)):
                 (self.server_data, self.torrent_data, self.history,
@@ -189,8 +217,9 @@ class qBittorrent:
             print(f"Reading data failed: {e}", file=sys.stderr)
             if not _dryrun:
                 try:
-                    self.datafile.rename(
-                        f"{self.datafile}_{NOW.strftime('%y%m%d%H%M%S')}")
+                    os.rename(
+                        self._datafile,
+                        f"{self._datafile}_{NOW.strftime('%y%m%d%H%M%S')}")
                 except OSError:
                     pass
 
@@ -204,7 +233,7 @@ class qBittorrent:
         if _dryrun:
             return
         try:
-            with open(self.datafile, "wb") as f:
+            with open(self._datafile, "wb") as f:
                 pickle.dump((self.server_data, self.torrent_data, self.history,
                              self.silence, self.session), f)
         except Exception as e:
@@ -225,6 +254,15 @@ class qBittorrent:
         session.mount("http://", adapter)
         session.mount("https://", adapter)
         return session
+
+    def _set_silence(self, **kwargs):
+        """Set a silent period if it is longer than the current setting.
+
+        The keyword arguments are passed to the datetime.timedelta
+        constructor."""
+        silence = NOW + timedelta(**kwargs)
+        if silence > self.silence:
+            self.silence = silence
 
     def _record(self):
         """Record qBittorrent traffic info to pandas DataFrame."""
@@ -287,50 +325,11 @@ class qBittorrent:
             self.history = pd.DataFrame(columns=("id", "add", "expire"))
             self.expired = self.history.index
 
-    def is_ready(self) -> bool:
-        """Whether qBittorrent is ready for maintenance.
-
-        False if:
-        -   during silence period (explicitly set after a successful action)
-        -   qBittorrent is busy checking, moving data...etc
-        """
-        return self.silence <= NOW and self._BUSY.isdisjoint(
-            self.states) or _dryrun
-
-    def requires_download(self) -> bool:
-        """Whether qBittorrent requires downloading new torrents.
-
-        `requires_download` implies `requires_remove`, but not vice versa.
-
-        True if:
-        -   server speed is bellow threshold (not throttled by user)
-        -   more than one limit-free torrents have expired
-        -   in dry run mode
-        """
-        speeds = self.speeds
-        print("Last hour avg speed: UL: {}/s, DL: {}/s.".format(
-            humansize(speeds[0]), humansize(speeds[1])))
-
-        return (
-            (speeds < self._speed_thresh).all() and
-            not self.server_state["use_alt_speed_limits"] and
-            not 0 < self.server_state["up_rate_limit"] < self._speed_thresh[0]
-            or self.expired.size > 1 or _dryrun)
-
-    def requires_remove(self) -> bool:
-        """Whether some torrents may need to be deleted.
-
-        True if:
-        -   space is bellow threshold
-        -   any limited-free torrent has expired
-        """
-        return self.usable_space < 0 or not self.expired.empty
-
     def clean_seeddir(self):
         """Clean files in seed dir which does not belong to qb download list."""
 
         seed_dir = self.seed_dir
-        if seed_dir is None:
+        if not seed_dir:
             return
 
         names = {v["name"] for v in self.torrents.values()}
@@ -354,6 +353,15 @@ class qBittorrent:
                     print(e, file=sys.stderr)
                 else:
                     logger.record("Cleanup", None, name)
+
+    def requires_remove(self) -> bool:
+        """Whether some torrents may need to be deleted.
+
+        True if:
+        -   space is bellow threshold
+        -   any limited-free torrent has expired
+        """
+        return self.usable_space < 0 or not self.expired.empty
 
     def get_remove_cands(self) -> Iterator[Removable]:
         """Discover the slowest torrents using jenks natural breaks."""
@@ -445,7 +453,7 @@ class qBittorrent:
             self._request("torrents/delete", params=params)
         for t in removeList:
             logger.record("Remove", t.size, t.title)
-        self.silence = NOW + timedelta(minutes=30)
+        self._set_silence(minutes=30)
 
     def add_torrent(self, downloadList: Sequence[Torrent], downloader):
         """Download torrents and upload to qBittorrent.
@@ -510,7 +518,7 @@ class qBittorrent:
             ))
 
         # set n hours of silence
-        self.silence = NOW + timedelta(hours=len(downloadList))
+        self._set_silence(hours=len(downloadList))
 
     def resume_paused(self):
         """If any torrent is paused, for any reason, resume."""
@@ -926,11 +934,11 @@ def main():
         datafile=join_root("data"),
     )
 
-    if qb.is_ready():
+    if qb.is_ready:
 
         qb.clean_seeddir()
 
-        if qb.requires_download():
+        if qb.requires_download:
             mteam = MTeam(
                 username=mt["username"],
                 password=mt["password"],
