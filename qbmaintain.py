@@ -957,7 +957,6 @@ def main():
                 downloadCand=downloadCand,
                 qb=qb,
             )
-
             qb.remove_torrents(solver.removeList)
             if downloadCand:
                 qb.add_torrent(solver.downloadList, mteam)  # type: ignore
