@@ -140,18 +140,21 @@ class qBittorrent:
         self.server_state = d = maindata["server_state"]
         if d["connection_status"] == "disconnected":
             sys.exit("qBittorrent is disconnected from the internet.")
-        if (d["use_alt_speed_limits"] or
-                0 < d["up_rate_limit"] < speed_thresh[0]):
-            not_throttled = False
+
+        throttled = (d["use_alt_speed_limits"] or
+                     0 < d["up_rate_limit"] < speed_thresh[0])
+        if throttled:
             self._set_silence(hours=1)
-        else:
-            not_throttled = True
 
         self.torrents = d = maindata["torrents"]
         self.states = Counter(v["state"] for v in d.values())
         self._space_offset = (sum(v["amount_left"] for v in d.values()) +
                               disk_quota * BYTESIZE["GiB"])
         self._record()
+
+        speeds = self.speeds
+        print("Last hour avg speed: UL: {}/s, DL: {}/s.".format(
+            humansize(speeds[0]), humansize(speeds[1])))
 
         # Whether qBittorrent is ready for maintenance. The value should be
         # checked before taking any actions.
@@ -160,16 +163,12 @@ class qBittorrent:
         #   qBittorrent is busy checking, moving data...etc
         self.is_ready = (self.silence <= NOW and
                          self._BUSY.isdisjoint(self.states))
-
         # Whether qBittorrent requires downloading new torrents.
         # True if:
         #   server speed is bellow threshold (not throttled by user)
         #   more than one limit-free torrents have expired
         #   in dry run mode
-        speeds = self.speeds
-        print("Last hour avg speed: UL: {}/s, DL: {}/s.".format(
-            humansize(speeds[0]), humansize(speeds[1])))
-        self.requires_download = (not_throttled and
+        self.requires_download = (not throttled and
                                   (speeds < speed_thresh).all() or
                                   self.expired.size > 1)
         if _dryrun:
@@ -177,28 +176,20 @@ class qBittorrent:
         # `requires_remove` is a method because it depends on the disk usage
         # that would be changed by calling `clean_seeddir`
 
-    def _request(self,
-                 path: str,
-                 *,
-                 method: str = "GET",
-                 ignore_error: bool = False,
-                 **kwargs):
+    def _request(self, path, *, method="GET", ignore_error=False, **kwargs):
         """Communicate with qBittorrent API."""
 
         try:
-            res = requests.request(
-                method,
-                self._api_base + path,
-                timeout=9.1,
-                **kwargs,
-            )
+            res = requests.request(method=method,
+                                   url=self._api_base + path,
+                                   timeout=9.1,
+                                   **kwargs)
             res.raise_for_status()
             return res
         except requests.RequestException as e:
-            if ignore_error:
-                print(e, file=sys.stderr)
-            else:
+            if not ignore_error:
                 raise
+            print(e, file=sys.stderr)
 
     def _load_data(self):
         """Load data objects from pickle."""
