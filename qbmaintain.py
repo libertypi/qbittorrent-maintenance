@@ -14,10 +14,11 @@ from urllib.parse import urljoin
 # Beautifulsoup, ortools, jenkspy, torrentool are imported as needed
 import pandas as pd
 import requests
+from pandas import DataFrame, Timestamp
 
 _dryrun: bool = False
 
-NOW = pd.Timestamp.now()
+NOW = Timestamp.now()
 
 BYTESIZE: Dict[str, int] = {
     k: v for kk, v in (
@@ -105,10 +106,10 @@ class Logger:
 class qBittorrent:
     """The manager class for communicating with qBittorrent and data persistence."""
 
-    server_data: pd.DataFrame
-    torrent_data: pd.DataFrame
-    history: pd.DataFrame
-    silence: pd.Timestamp
+    server_data: DataFrame
+    torrent_data: DataFrame
+    history: DataFrame
+    silence: Timestamp
     session: requests.Session
     expired: pd.Index
     is_ready: bool
@@ -167,7 +168,6 @@ class qBittorrent:
         # True if:
         #   server speed is bellow threshold (not throttled by user)
         #   more than one limit-free torrents have expired
-        #   in dry run mode
         self.requires_download = (not throttled and
                                   (speeds < speed_thresh).all() or
                                   self.expired.size > 1)
@@ -194,8 +194,7 @@ class qBittorrent:
     def _load_data(self):
         """Load data objects from pickle."""
 
-        types = (pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Timestamp,
-                 requests.Session)
+        types = (DataFrame, DataFrame, DataFrame, Timestamp, requests.Session)
         try:
             with open(self._datafile, mode="rb") as f:
                 data = pickle.load(f)
@@ -214,7 +213,6 @@ class qBittorrent:
                         f"{self._datafile}_{NOW.strftime('%y%m%d%H%M%S')}")
                 except OSError:
                     pass
-
         self.server_data = self.torrent_data = self.history = None
         self.silence = NOW
         self.init_session()
@@ -260,14 +258,14 @@ class qBittorrent:
         """Record qBittorrent traffic info to pandas DataFrame."""
 
         # new rows for application and torrents
-        app_row = pd.DataFrame(
+        app_row = DataFrame(
             {
                 "upload": self.server_state["alltime_ul"],
                 "download": self.server_state["alltime_dl"]
             },
             index=(NOW,),
         )
-        torrent_row = pd.DataFrame(
+        torrent_row = DataFrame(
             {k: v["uploaded"] for k, v in self.torrents.items()},
             index=(NOW,),
         )
@@ -314,14 +312,14 @@ class qBittorrent:
             if not self.expired.empty:
                 self.history.loc[self.expired, "expire"] = pd.NaT
         except Exception:
-            self.history = pd.DataFrame(columns=("id", "add", "expire"))
+            self.history = DataFrame(columns=("id", "add", "expire"))
             self.expired = self.history.index
 
     def clean_seeddir(self):
         """Clean files in seed dir which does not belong to qb download list."""
 
         seed_dir = self.seed_dir
-        if not seed_dir:
+        if seed_dir is None:
             return
 
         names = {v["name"] for v in self.torrents.values()}
@@ -478,6 +476,7 @@ class qBittorrent:
                     params={"hashes": "|".join(t.hash for t in downloadList)})
 
         from torrentool.api import Torrent as TorrentParser
+
         # convert timedelta to timestamp
         # read hash and name from torrent file
         data = []
@@ -506,7 +505,7 @@ class qBittorrent:
 
         # save new info to dataframe
         self.history = df.append(
-            pd.DataFrame(data, index=index, columns=("id", "add", "expire")))
+            DataFrame(data, index=index, columns=("id", "add", "expire")))
 
         # set n hours of silence
         self._set_silence(hours=len(downloadList))
