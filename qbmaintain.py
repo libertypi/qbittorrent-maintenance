@@ -74,7 +74,7 @@ class Logger:
             name,
         ))
 
-    def write(self, logfile: Path, copy_to: str = None):
+    def write(self, logfile: str, copy_to: str = None):
         """Insert logs to the beginning of a logfile.
 
         If `copy_to` is a dir, logfile will be copied to that directory.
@@ -119,16 +119,22 @@ class qBittorrent:
     _DOWNLOADING = {"downloading", "metaDL", "allocating"}
     _STALED = {"stalledDL", "queuedDL"}
 
-    def __init__(self, *, host: str, seed_dir: str, disk_quota: float,
-                 up_thresh: int, dl_thresh: int, dead_thresh: int,
-                 datafile: Path):
+    def __init__(self,
+                 *,
+                 host: str,
+                 seed_dir: str,
+                 disk_quota: float,
+                 up_thresh: int,
+                 dl_thresh: int,
+                 dead_thresh: int,
+                 datafile="data"):
 
         self._api_base = urljoin(host, "api/v2/")
         self.seed_dir = Path(seed_dir) if seed_dir else None
         speed_thresh = (up_thresh * BYTESIZE["KiB"],
                         dl_thresh * BYTESIZE["KiB"])
         self._dead_thresh = dead_thresh * BYTESIZE["KiB"]
-        self._datafile = datafile
+        self._datafile = Path(datafile)
         self._usable_space = self._pref = None
         self._load_data()
 
@@ -314,14 +320,8 @@ class qBittorrent:
         seed_dir = self.seed_dir
         if seed_dir is None:
             return
-        try:
-            listdir = os.listdir(seed_dir)
-        except OSError as e:
-            print(e, file=sys.stderr)
-            return
         names = {v["name"] for v in self.torrents.values()}
-
-        for name in listdir:
+        for name in os.listdir(seed_dir):
             if name not in names and re.sub(r"\.!qB$", "", name) not in names:
                 path = seed_dir.joinpath(name)
                 self._usable_space = None
@@ -873,13 +873,14 @@ def parse_args():
     return parser.parse_args()
 
 
-def parse_config(configfile: Path):
+def parse_config(configfile="config.ini"):
     """Read or create config file."""
 
     parser = ConfigParser()
     if parser.read(configfile, encoding="utf-8"):
         return parser
 
+    configfile = Path(configfile).absolute()
     parser["DEFAULT"] = {
         "host": "http://localhost/",
         "seed_dir": "",
@@ -902,7 +903,6 @@ def parse_config(configfile: Path):
     }
     with open(configfile, "w", encoding="utf-8") as f:
         parser.write(f)
-
     sys.exit(f'Please edit "{configfile}" before running me again.')
 
 
@@ -910,9 +910,9 @@ def main():
 
     global _dryrun
 
+    os.chdir(Path(__file__).parent)
     args = parse_args()
-    join_root = Path(__file__).with_name
-    config = parse_config(join_root("config.ini"))
+    config = parse_config()
 
     mt = config["MTEAM"]
     config = config["DEBUG"] if args.remote else config["DEFAULT"]
@@ -925,7 +925,6 @@ def main():
         up_thresh=config.getint("up_rate_thresh"),
         dl_thresh=config.getint("dl_rate_thresh"),
         dead_thresh=config.getint("dead_up_thresh"),
-        datafile=join_root("data"),
     )
 
     if qb.is_ready or args.force:
@@ -959,7 +958,7 @@ def main():
     qb.dump_data()
 
     if logger:
-        logger.write(join_root("logfile.log"), config["log_backup_dir"])
+        logger.write("logfile.log", config["log_backup_dir"])
 
 
 logger = Logger()
