@@ -199,21 +199,21 @@ class qBittorrent:
 
         types = (DataFrame, DataFrame, DataFrame, Timestamp, requests.Session)
         try:
-            with open(self._datafile, mode="rb") as f:
-                data = pickle.load(f)
+            with open(self._datafile, mode="rb") as d:
+                data = pickle.load(d)
             if all(map(isinstance, data, types)):
                 (self.server_data, self.torrent_data, self.history,
                  self.silence, self.session) = data
                 return
+            raise TypeError
         except FileNotFoundError:
             pass
         except Exception as e:
             print(f"Reading data failed: {e}", file=sys.stderr)
             if not _dryrun:
+                d = self._datafile
                 try:
-                    os.rename(
-                        self._datafile,
-                        f"{self._datafile}_{NOW.strftime('%y%m%d%H%M%S')}")
+                    os.rename(d, f"{d}_{NOW.strftime('%y%m%d%H%M%S')}")
                 except OSError:
                     pass
         self.server_data = self.torrent_data = self.history = None
@@ -882,7 +882,7 @@ def parse_config(configfile="config.ini"):
 
     configfile = op.abspath(configfile)
     parser["DEFAULT"] = {
-        "host": "http://localhost/",
+        "host": "http://localhost",
         "seed_dir": "",
         "disk_quota": "50",
         "up_rate_thresh": "2700",
