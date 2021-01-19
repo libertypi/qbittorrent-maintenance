@@ -1,4 +1,5 @@
 import os
+import os.path as op
 import pickle
 import re
 import shutil
@@ -8,7 +9,6 @@ from collections import Counter
 from configparser import ConfigParser
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Dict, Iterable, Iterator, Sequence
 from urllib.parse import urljoin
 
@@ -127,14 +127,14 @@ class qBittorrent:
                  up_thresh: int,
                  dl_thresh: int,
                  dead_thresh: int,
-                 datafile="data"):
+                 datafile: str = "data"):
 
         self._api_base = urljoin(host, "api/v2/")
-        self.seed_dir = Path(seed_dir) if seed_dir else None
+        self.seed_dir = op.normpath(seed_dir) if seed_dir else None
         speed_thresh = (up_thresh * BYTESIZE["KiB"],
                         dl_thresh * BYTESIZE["KiB"])
         self._dead_thresh = dead_thresh * BYTESIZE["KiB"]
-        self._datafile = Path(datafile)
+        self._datafile = datafile
         self._usable_space = self._pref = None
         self._load_data()
 
@@ -318,18 +318,18 @@ class qBittorrent:
         """Clean files in seed dir which does not belong to qb download list."""
 
         seed_dir = self.seed_dir
-        if seed_dir is None:
+        if not seed_dir:
             return
         names = {v["name"] for v in self.torrents.values()}
         for name in os.listdir(seed_dir):
             if name not in names and re.sub(r"\.!qB$", "", name) not in names:
-                path = seed_dir.joinpath(name)
                 self._usable_space = None
-                print("Cleanup:", path)
+                path = op.join(seed_dir, name)
+                print(f"Cleanup: {path}")
                 try:
                     if _dryrun:
                         pass
-                    elif path.is_dir():
+                    elif op.isdir(path):
                         # have to set ignore_errors=True so that one failure
                         # does not blow the whole thing up
                         shutil.rmtree(path, ignore_errors=True)
@@ -629,7 +629,7 @@ class MTeam:
             print("invalid login", file=sys.stderr)
 
     def scan(self, pages: Iterable[str]) -> Iterator[Torrent]:
-        '''Scan a list of pages and yield Torrent objects satisfy conditions.'''
+        """Scan a list of pages and yield Torrent objects satisfy conditions."""
 
         from bs4 import BeautifulSoup
 
@@ -845,7 +845,7 @@ def humansize(size: int) -> str:
 
 
 def parse_args():
-    '''Parse arguments from the command line.'''
+    """Parse arguments from the command line."""
 
     parser = ArgumentParser(
         description="qBittorrent Maintenance Tool by David Pi")
@@ -880,7 +880,7 @@ def parse_config(configfile="config.ini"):
     if parser.read(configfile, encoding="utf-8"):
         return parser
 
-    configfile = Path(configfile).absolute()
+    configfile = op.abspath(configfile)
     parser["DEFAULT"] = {
         "host": "http://localhost/",
         "seed_dir": "",
@@ -910,7 +910,7 @@ def main():
 
     global _dryrun
 
-    os.chdir(Path(__file__).parent)
+    os.chdir(op.dirname(__file__))
     args = parse_args()
     config = parse_config()
 
