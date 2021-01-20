@@ -58,8 +58,9 @@ class Logger:
         self._log = []
 
     def __str__(self) -> str:
-        return "{:17}    {:8}    {:>11}    {}\n{:->80}\n{}".format(
-            "Date", "Action", "Size", "Name", "", "".join(reversed(self._log)))
+        return "{:17}    {:8}    {:>11}    {}\n{}\n{}".format(
+            "Date", "Action", "Size", "Name", "-" * 80,
+            "".join(reversed(self._log)))
 
     def __bool__(self):
         return not not self._log
@@ -889,7 +890,7 @@ def parse_config(configfile="config.ini"):
         "up_rate_thresh": "2700",
         "dl_rate_thresh": "6000",
         "dead_up_thresh": "2",
-        "log_backup_dir": "",
+        "log_backup": "",
     }
     parser["MTEAM"] = {
         "username": "",
@@ -899,8 +900,9 @@ def parse_config(configfile="config.ini"):
         "pages": "example1.php\nexample2.php",
     }
     parser["DEBUG"] = {
-        "host": "http://localhost",
+        "host": "http://",
         "seed_dir": "",
+        "log_backup": "",
     }
     with open(configfile, "w", encoding="utf-8") as f:
         parser.write(f)
@@ -959,7 +961,7 @@ def main():
     qb.dump_data()
 
     if logger:
-        logger.write(copy_to=config["log_backup_dir"])
+        logger.write(copy_to=config["log_backup"])
 
 
 logger = Logger()
