@@ -74,14 +74,15 @@ class Logger:
             name,
         ))
 
-    def write(self, logfile: str, copy_to: str = None):
+    def write(self, logfile="logfile.log", copy_to=None):
         """Insert logs to the beginning of a logfile.
 
-        If `copy_to` is a dir, logfile will be copied to that directory.
+        If `copy_to` is a directory or a file, logfile will be copied to the
+        destination.
         """
         if _dryrun:
             print(" Logs ".center(50, "-"))
-            print(self.__str__(), end="")
+            print(self, end="")
             return
         try:
             try:
@@ -97,7 +98,7 @@ class Logger:
                 with open(logfile, mode="w", encoding="utf-8") as f:
                     f.write(self.__str__())
             if copy_to:
-                shutil.copy(logfile, copy_to)
+                shutil.copy(logfile, op.normpath(copy_to))
         except OSError as e:
             print(e, file=sys.stderr)
 
@@ -159,7 +160,7 @@ class qBittorrent:
         self._record()
 
         speeds = self.speeds
-        print("Last hour avg speed: UL: {}/s, DL: {}/s.".format(
+        print("Avg speed (last hour): UL: {}/s, DL: {}/s".format(
             humansize(speeds[0]), humansize(speeds[1])))
 
         # Whether qBittorrent is ready for maintenance. The value should be
@@ -958,7 +959,7 @@ def main():
     qb.dump_data()
 
     if logger:
-        logger.write("logfile.log", config["log_backup_dir"])
+        logger.write(copy_to=config["log_backup_dir"])
 
 
 logger = Logger()
