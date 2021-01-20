@@ -86,16 +86,16 @@ class Logger:
             return
         try:
             try:
-                with open(logfile, mode="r+", encoding="utf-8") as f:
-                    for _ in range(2):
-                        f.readline()
+                with open(logfile, "r+", encoding="utf-8") as f:
+                    f.readline()
+                    f.readline()
                     backup = f.read()
                     f.seek(0)
                     f.write(self.__str__())
                     f.write(backup)
                     f.truncate()
             except FileNotFoundError:
-                with open(logfile, mode="w", encoding="utf-8") as f:
+                with open(logfile, "w", encoding="utf-8") as f:
                     f.write(self.__str__())
             if copy_to:
                 shutil.copy(logfile, op.normpath(copy_to))
