@@ -111,7 +111,6 @@ class qBittorrent:
     torrent_data: DataFrame
     history: DataFrame
     silence: Timestamp
-    session: requests.Session
     expired: pd.Index
     is_ready: bool
     requires_download: bool
@@ -137,7 +136,7 @@ class qBittorrent:
                         dl_thresh * BYTESIZE["KiB"])
         self._dead_thresh = dead_thresh * BYTESIZE["KiB"]
         self._datafile = datafile
-        self._usable_space = self._pref = None
+        self._usable_space = self._pref = self._session = None
         self._load_data()
 
         try:
@@ -199,13 +198,14 @@ class qBittorrent:
     def _load_data(self):
         """Load data objects from pickle."""
 
-        types = (DataFrame, DataFrame, DataFrame, Timestamp, requests.Session)
+        types = (DataFrame, DataFrame, DataFrame, Timestamp,
+                 requests.cookies.RequestsCookieJar)
         try:
             with open(self._datafile, mode="rb") as d:
                 data = pickle.load(d)
             if all(map(isinstance, data, types)):
                 (self.server_data, self.torrent_data, self.history,
-                 self.silence, self.session) = data
+                 self.silence, self.cookiejar) = data
                 return
             raise TypeError
         except FileNotFoundError:
@@ -230,24 +230,34 @@ class qBittorrent:
         try:
             with open(self._datafile, "wb") as f:
                 pickle.dump((self.server_data, self.torrent_data, self.history,
-                             self.silence, self.session), f)
+                             self.silence, self.cookiejar), f)
         except Exception as e:
             msg = f"Saving data failed: {e}"
             logger.record("Error", None, msg)
             print(msg, file=sys.stderr)
 
     def init_session(self):
-        """Instantiate a new requests session."""
-        from requests.adapters import HTTPAdapter
+        """Reset and return a new requests session."""
+        self._session = self.cookiejar = None
+        return self.session
 
-        session = self.session = requests.Session()
-        session.headers.update({
-            "User-Agent":
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) Gecko/20100101 Firefox/80.0"
-        })
-        adapter = HTTPAdapter(max_retries=5)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
+    @property
+    def session(self):
+        session = self._session
+        if session is None:
+            session = self._session = requests.Session()
+            session.headers.update({
+                "User-Agent":
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) "
+                    "Gecko/20100101 Firefox/80.0"
+            })
+            adapter = requests.adapters.HTTPAdapter(max_retries=5)
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+            if self.cookiejar is None:
+                self.cookiejar = session.cookies
+            else:
+                session.cookies = self.cookiejar
         return session
 
     def _set_silence(self, **kwargs):
@@ -572,7 +582,7 @@ class qBittorrent:
 class MTeam:
     """A cumbersome MTeam downloader."""
 
-    DOMAIN = "https://pt.m-team.cc/"
+    DOMAIN = "https://pt.m-team.cc"
 
     def __init__(self, *, username: str, password: str, peer_slope: float,
                  peer_intercept: float, qb: qBittorrent):
@@ -599,7 +609,7 @@ class MTeam:
               end="",
               flush=True)
         try:
-            response = self.session.get(url, timeout=(6.1, 27))
+            response = self.session.get(url, timeout=(6.1, 30))
             response.raise_for_status()
         except (requests.ConnectionError, requests.HTTPError,
                 requests.Timeout) as e:
@@ -615,11 +625,11 @@ class MTeam:
         print("logging in..", end="", flush=True)
         try:
             response = self.session.post(
-                url=self.DOMAIN + "takelogin.php",
+                url=self.DOMAIN + "/takelogin.php",
                 data=self.account,
-                headers={"referer": self.DOMAIN + "login.php"})
+                headers={"referer": self.DOMAIN + "/login.php"})
             response.raise_for_status()
-            response = self.session.get(url, timeout=(6.1, 27))
+            response = self.session.get(url, timeout=(6.1, 30))
             response.raise_for_status()
         except Exception as e:
             print(e, file=sys.stderr)
@@ -850,7 +860,7 @@ def parse_args():
     """Parse arguments from the command line."""
 
     parser = ArgumentParser(
-        description="qBittorrent Maintenance Tool by David Pi")
+        description="The Ultimate qBittorrent Maintenance Tool, by David Pi")
     parser.add_argument(
         "-d",
         "--dryrun",
