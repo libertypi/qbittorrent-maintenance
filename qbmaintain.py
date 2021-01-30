@@ -5,7 +5,6 @@ import pickle
 import re
 import shutil
 import sys
-from argparse import ArgumentParser
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -17,7 +16,6 @@ import pandas as pd
 import requests
 from pandas import DataFrame, Timestamp
 
-_dryrun: bool = False
 NOW = Timestamp.now()
 BYTESIZE: Dict[str, int] = {
     k: v for kk, v in (
@@ -81,7 +79,7 @@ class Logger:
         If `copy_to` is a directory or a file, logfile will be copied to the
         destination.
         """
-        if _dryrun:
+        if dryrun:
             print(" Logs ".center(50, "-"))
             print(self, end="")
             return
@@ -206,7 +204,7 @@ class qBittorrent:
             pass
         except Exception as e:
             print(f"Reading data failed: {e}", file=sys.stderr)
-            if not _dryrun:
+            if not dryrun:
                 d = self._datafile
                 try:
                     os.rename(d, f"{d}_{NOW.strftime('%y%m%d%H%M%S')}")
@@ -219,7 +217,7 @@ class qBittorrent:
     def dump_data(self):
         """Save data to disk."""
 
-        if _dryrun:
+        if dryrun:
             return
         try:
             with open(self._datafile, "wb") as f:
@@ -333,7 +331,7 @@ class qBittorrent:
                 path = op.join(seed_dir, name)
                 print(f"Cleanup: {path}")
                 try:
-                    if _dryrun:
+                    if dryrun:
                         pass
                     elif op.isdir(path):
                         # have to set ignore_errors=True so that one failure
@@ -367,7 +365,8 @@ class qBittorrent:
         try:
             breaks = jenks_breaks(speeds, nb_class=min(speeds.size - 1, 3))[1]
         except Exception as e:
-            print("Jenkspy failed:", e, file=sys.stderr)
+            if speeds.size > 2:
+                print(f"Jenkspy failed: {e}", file=sys.stderr)
             breaks = speeds.mean()
 
         torrents = self.torrents
@@ -437,7 +436,7 @@ class qBittorrent:
 
         if not removeList:
             return
-        if not _dryrun:
+        if not dryrun:
             params = {
                 "hashes": "|".join(t.hash for t in removeList),
                 "deleteFiles": True
@@ -462,7 +461,7 @@ class qBittorrent:
             content = {t.id: downloader(t.link).content for t in downloadList}
         except AttributeError:
             return
-        if not _dryrun:
+        if not dryrun:
             try:
                 self._request("torrents/add", method="POST", files=content)
             except requests.RequestException as e:
@@ -516,7 +515,7 @@ class qBittorrent:
         """If any torrent is paused, for any reason, resume."""
         if not self._PAUSED.isdisjoint(self.states):
             print("Resume torrents.")
-            if not _dryrun:
+            if not dryrun:
                 self._request("torrents/resume",
                               ignore_error=True,
                               params={"hashes": "all"})
@@ -593,16 +592,11 @@ class MTeam:
         self.pages = pages
         self.qb = qb
         self.session = qb.session
-        self.invalid_login = False
 
     def get(self, path: str):
 
-        if self.invalid_login:
-            return
         url = urljoin(self.domain, path)
-        print(f'Connecting: {url if len(url) <= 60 else url[:61] + "[...]"}..',
-              end="",
-              flush=True)
+        print(f'Connecting: {self._shorten(url)} ..', end="", flush=True)
         try:
             response = self.session.get(url, timeout=(6.1, 30))
             response.raise_for_status()
@@ -632,8 +626,9 @@ class MTeam:
             if "/login.php" not in response.url:
                 print("ok")
                 return response
-            self.invalid_login = True
             print("invalid login", file=sys.stderr)
+            self.get = lambda url: print("Skipped: {}".format(
+                self._shorten(urljoin(self.domain, url))))
 
     def scan(self) -> Iterator[Torrent]:
         """Scan a list of pages and yield Torrent objects satisfy conditions."""
@@ -706,7 +701,7 @@ class MTeam:
                     title = title.get("title") or title.get_text(strip=True)
 
                 except Exception as e:
-                    print("Parsing error:", e, file=sys.stderr)
+                    print(f"Parsing error: {e}", file=sys.stderr)
 
                 else:
                     visited.add(tid)
@@ -718,6 +713,10 @@ class MTeam:
                         expire=expire,
                         title=title,
                     )
+
+    @staticmethod
+    def _shorten(s: str, k: int = 60):
+        return s if len(s) <= k else s[:k - 4] + "[...]"
 
 
 class MPSolver:
@@ -854,30 +853,36 @@ def humansize(size: int) -> str:
 def parse_args():
     """Parse arguments from the command line."""
 
-    parser = ArgumentParser(
-        description="The Ultimate qBittorrent Maintenance Tool, by David Pi")
-    parser.add_argument(
-        "-d",
-        "--dryrun",
-        dest="dryrun",
-        action="store_true",
-        help="dry run",
-    )
-    parser.add_argument(
-        "-f",
-        "--force",
-        dest="force",
-        action="store_true",
-        help="force download",
-    )
-    parser.add_argument(
-        "-r",
-        "--remote",
-        dest="remote",
-        action="store_true",
-        help="override entries in 'server' config with that of 'debug'",
-    )
-    return parser.parse_args()
+    args = {"dryrun": False, "force": False, "remote": False}
+    try:
+        for arg in sys.argv[1:]:
+            if arg.startswith("-"):
+                for c in arg.lstrip("-"):
+                    if c == "d":
+                        args["dryrun"] = True
+                    elif c == "f":
+                        args["force"] = True
+                    elif c == "r":
+                        args["remote"] = True
+                    elif c == "h":
+                        raise ValueError
+                    else:
+                        break
+                else:
+                    continue
+            raise ValueError(f"\n\nunrecognized arguments: {arg}")
+    except ValueError as e:
+        sys.exit(
+            f"usage: {op.basename(__file__)} [-h] [-d] [-f] [-r]\n\n"
+            "The Ultimate qBittorrent Maintenance Tool\n"
+            "Author: David Pi\n\n"
+            "optional arguments:\n"
+            "  -h    show this help message and exit\n"
+            "  -d    dry run\n"
+            "  -f    force download\n"
+            "  -r    override entries in 'server' config with that of 'debug'"
+            f"{e}")
+    return args
 
 
 def parse_config(configfile="config.json") -> Dict[str, dict]:
@@ -889,7 +894,7 @@ def parse_config(configfile="config.json") -> Dict[str, dict]:
     except FileNotFoundError:
         pass
     except (OSError, ValueError) as e:
-        sys.exit(e)
+        sys.exit(f"Error in config file: {e}")
 
     default = {
         "server": {
@@ -923,23 +928,22 @@ def parse_config(configfile="config.json") -> Dict[str, dict]:
 
 def main():
 
-    global _dryrun
-
+    global dryrun
     args = parse_args()
-    _dryrun = args.dryrun
+    dryrun = args["dryrun"]
 
     os.chdir(op.dirname(__file__))
     config = parse_config()
-    if args.remote:
+    if args["remote"]:
         config["server"].update(config["debug"])
 
     qb = qBittorrent(**config["server"])
 
-    if qb.is_ready or args.force:
+    if qb.is_ready or args["force"]:
 
         qb.clean_seeddir()
 
-        if qb.requires_download or args.force:
+        if qb.requires_download or args["force"]:
             mteam = MTeam(**config["mteam"], qb=qb)
             downloadCand = tuple(mteam.scan())
         else:
@@ -963,6 +967,7 @@ def main():
         logger.write(copy_to=config["server"]["log_backup_path"])
 
 
+dryrun = False
 logger = Logger()
 
 if __name__ == "__main__":
