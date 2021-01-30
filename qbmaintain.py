@@ -199,7 +199,7 @@ class qBittorrent:
                 (self.server_data, self.torrent_data, self.history,
                  self.silence, self.cookiejar) = data
                 return
-            raise TypeError
+            raise TypeError("wrong object type")
         except FileNotFoundError:
             pass
         except Exception as e:
@@ -622,13 +622,14 @@ class MTeam:
             response.raise_for_status()
         except Exception as e:
             print(e, file=sys.stderr)
-        else:
-            if "/login.php" not in response.url:
-                print("ok")
-                return response
-            print("invalid login", file=sys.stderr)
-            self.get = lambda url: print("Skipped: {}".format(
-                self._shorten(urljoin(self.domain, url))))
+            return
+        if "/login.php" not in response.url:
+            print("ok")
+            return response
+
+        print("invalid login", file=sys.stderr)
+        self.get = lambda path: print("Skipped: {}".format(
+            self._shorten(urljoin(self.domain, path))))
 
     def scan(self) -> Iterator[Torrent]:
         """Scan a list of pages and yield Torrent objects satisfy conditions."""
@@ -892,38 +893,35 @@ def parse_config(configfile="config.json") -> Dict[str, dict]:
         with open(configfile, "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
-        pass
+        default = {
+            "server": {
+                "host": "http://localhost",
+                "disk_quota": 50,
+                "up_rate_thresh": 2700,
+                "dl_rate_thresh": 6000,
+                "dead_up_thresh": 2,
+                "seed_dir": None,
+                "log_backup_path": None,
+            },
+            "mteam": {
+                "username": "",
+                "password": "",
+                "peer_slope": 0.3,
+                "peer_intercept": 30,
+                "domain": "https://pt.m-team.cc",
+                "pages": [
+                    "/adult.php?spstate=2&sort=8&type=desc",
+                    "/torrents.php?spstate=2&sort=8&type=desc"
+                ]
+            },
+            "debug": {}
+        } # yapf: disable
+        configfile = op.abspath(configfile)
+        with open(configfile, "w", encoding="utf-8") as f:
+            json.dump(default, f, indent=4)
+        sys.exit(f'Please edit "{configfile}" before running me again.')
     except (OSError, ValueError) as e:
         sys.exit(f"Error in config file: {e}")
-
-    default = {
-        "server": {
-            "host": "http://localhost",
-            "disk_quota": 50,
-            "up_rate_thresh": 2700,
-            "dl_rate_thresh": 6000,
-            "dead_up_thresh": 2,
-            "seed_dir": None,
-            "log_backup_path": None,
-        },
-        "mteam": {
-            "username": "",
-            "password": "",
-            "peer_slope": 0.3,
-            "peer_intercept": 30,
-            "domain": "https://pt.m-team.cc",
-            "pages": [
-                "/adult.php?spstate=2&sort=8&type=desc",
-                "/torrents.php?spstate=2&sort=8&type=desc"
-            ]
-        },
-        "debug": {}
-    } # yapf: disable
-
-    configfile = op.abspath(configfile)
-    with open(configfile, "w", encoding="utf-8") as f:
-        json.dump(default, f, indent=4)
-    sys.exit(f'Please edit "{configfile}" before running me again.')
 
 
 def main():
