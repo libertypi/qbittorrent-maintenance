@@ -781,7 +781,7 @@ class MPSolver:
             self.downloadList = tuple(t for t in downloadCand if next(value))
             self.removeList = tuple(t for t in removeCand if next(value))
         else:
-            self.status = "CP-SAT solver cannot find an solution. Status: {}".format(
+            self.status = "CP-SAT solver cannot find a solution. Status: {}".format(
                 solver.StatusName(status))
             self.downloadList = self.removeList = ()
 
