@@ -1,7 +1,7 @@
 api.txt
 *.log
 data
-config.ini
+config.json
 .vscode/
 
 # Byte-compiled / optimized / DLL files

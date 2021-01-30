@@ -1,3 +1,4 @@
+import json
 import os
 import os.path as op
 import pickle
@@ -6,7 +7,6 @@ import shutil
 import sys
 from argparse import ArgumentParser
 from collections import Counter
-from configparser import ConfigParser
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, Iterable, Iterator, Sequence
@@ -120,22 +120,16 @@ class qBittorrent:
     _DOWNLOADING = {"downloading", "metaDL", "allocating"}
     _STALED = {"stalledDL", "queuedDL"}
 
-    def __init__(self,
-                 *,
-                 host: str,
-                 seed_dir: str,
-                 disk_quota: float,
-                 up_thresh: int,
-                 dl_thresh: int,
-                 dead_thresh: int,
-                 datafile: str = "data"):
+    def __init__(self, *, host: str, disk_quota: float, up_rate_thresh: int,
+                 dl_rate_thresh: int, dead_up_thresh: int, seed_dir: str,
+                 **kwargs):
 
-        self._api_base = urljoin(host, "api/v2/")
+        self._api_base = urljoin(host, "/api/v2/")
         self.seed_dir = op.normpath(seed_dir) if seed_dir else None
-        speed_thresh = (up_thresh * BYTESIZE["KiB"],
-                        dl_thresh * BYTESIZE["KiB"])
-        self._dead_thresh = dead_thresh * BYTESIZE["KiB"]
-        self._datafile = datafile
+        speed_thresh = (up_rate_thresh * BYTESIZE["KiB"],
+                        dl_rate_thresh * BYTESIZE["KiB"])
+        self._dead_thresh = dead_up_thresh * BYTESIZE["KiB"]
+        self._datafile = "data"
         self._usable_space = self._pref = self._session = None
         self._load_data()
 
@@ -582,10 +576,9 @@ class qBittorrent:
 class MTeam:
     """A cumbersome MTeam downloader."""
 
-    DOMAIN = "https://pt.m-team.cc"
-
     def __init__(self, *, username: str, password: str, peer_slope: float,
-                 peer_intercept: float, qb: qBittorrent):
+                 peer_intercept: float, domain: str, pages: Sequence[str],
+                 qb: qBittorrent):
         """Minimum peer requirement subjects to:
 
         Peer >= A * Size(GiB) + B
@@ -596,6 +589,8 @@ class MTeam:
         self.account = {"username": username, "password": password}
         self.A = peer_slope / BYTESIZE["GiB"]
         self.B = peer_intercept
+        self.domain = domain
+        self.pages = pages
         self.qb = qb
         self.session = qb.session
         self.invalid_login = False
@@ -604,7 +599,7 @@ class MTeam:
 
         if self.invalid_login:
             return
-        url = urljoin(self.DOMAIN, path)
+        url = urljoin(self.domain, path)
         print(f'Connecting: {url if len(url) <= 60 else url[:61] + "[...]"}..',
               end="",
               flush=True)
@@ -625,9 +620,9 @@ class MTeam:
         print("logging in..", end="", flush=True)
         try:
             response = self.session.post(
-                url=self.DOMAIN + "/takelogin.php",
+                url=urljoin(self.domain, "/takelogin.php"),
                 data=self.account,
-                headers={"referer": self.DOMAIN + "/login.php"})
+                headers={"referer": urljoin(self.domain, "/login.php")})
             response.raise_for_status()
             response = self.session.get(url, timeout=(6.1, 30))
             response.raise_for_status()
@@ -640,7 +635,7 @@ class MTeam:
             self.invalid_login = True
             print("invalid login", file=sys.stderr)
 
-    def scan(self, pages: Iterable[str]) -> Iterator[Torrent]:
+    def scan(self) -> Iterator[Torrent]:
         """Scan a list of pages and yield Torrent objects satisfy conditions."""
 
         from bs4 import BeautifulSoup
@@ -659,7 +654,7 @@ class MTeam:
         re_time = re.compile(
             r"^\W*限時：\W*(?:(\d+)\s*日)?\W*(?:(\d+)\s*時)?\W*(?:(\d+)\s*分)?")
 
-        for page in pages:
+        for page in self.pages:
             try:
                 soup = (tr.find_all("td", recursive=False)
                         for tr in BeautifulSoup(
@@ -880,42 +875,49 @@ def parse_args():
         "--remote",
         dest="remote",
         action="store_true",
-        help="override [DEFAULT] config section with [DEBUG]",
+        help="override entries in 'server' config with that of 'debug'",
     )
     return parser.parse_args()
 
 
-def parse_config(configfile="config.ini"):
+def parse_config(configfile="config.json") -> Dict[str, dict]:
     """Read or create config file."""
 
-    parser = ConfigParser()
-    if parser.read(configfile, encoding="utf-8"):
-        return parser
+    try:
+        with open(configfile, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as e:
+        sys.exit(e)
+
+    default = {
+        "server": {
+            "host": "http://localhost",
+            "disk_quota": 50,
+            "up_rate_thresh": 2700,
+            "dl_rate_thresh": 6000,
+            "dead_up_thresh": 2,
+            "seed_dir": None,
+            "log_backup_path": None,
+        },
+        "mteam": {
+            "username": "",
+            "password": "",
+            "peer_slope": 0.3,
+            "peer_intercept": 30,
+            "domain": "https://pt.m-team.cc",
+            "pages": [
+                "/adult.php?spstate=2&sort=8&type=desc",
+                "/torrents.php?spstate=2&sort=8&type=desc"
+            ]
+        },
+        "debug": {}
+    } # yapf: disable
 
     configfile = op.abspath(configfile)
-    parser["DEFAULT"] = {
-        "host": "http://localhost",
-        "seed_dir": "",
-        "disk_quota": "50",
-        "up_rate_thresh": "2700",
-        "dl_rate_thresh": "6000",
-        "dead_up_thresh": "2",
-        "log_backup": "",
-    }
-    parser["MTEAM"] = {
-        "username": "",
-        "password": "",
-        "peer_slope": "0.3",
-        "peer_intercept": "30",
-        "pages": "example1.php\nexample2.php",
-    }
-    parser["DEBUG"] = {
-        "host": "http://",
-        "seed_dir": "",
-        "log_backup": "",
-    }
     with open(configfile, "w", encoding="utf-8") as f:
-        parser.write(f)
+        json.dump(default, f, indent=4)
     sys.exit(f'Please edit "{configfile}" before running me again.')
 
 
@@ -923,36 +925,23 @@ def main():
 
     global _dryrun
 
-    os.chdir(op.dirname(__file__))
     args = parse_args()
-    config = parse_config()
-
-    mt = config["MTEAM"]
-    config = config["DEBUG"] if args.remote else config["DEFAULT"]
     _dryrun = args.dryrun
 
-    qb = qBittorrent(
-        host=config["host"],
-        seed_dir=config["seed_dir"],
-        disk_quota=config.getfloat("disk_quota"),
-        up_thresh=config.getint("up_rate_thresh"),
-        dl_thresh=config.getint("dl_rate_thresh"),
-        dead_thresh=config.getint("dead_up_thresh"),
-    )
+    os.chdir(op.dirname(__file__))
+    config = parse_config()
+    if args.remote:
+        config["server"].update(config["debug"])
+
+    qb = qBittorrent(**config["server"])
 
     if qb.is_ready or args.force:
 
         qb.clean_seeddir()
 
         if qb.requires_download or args.force:
-            mteam = MTeam(
-                username=mt["username"],
-                password=mt["password"],
-                peer_slope=mt.getfloat("peer_slope"),
-                peer_intercept=mt.getfloat("peer_intercept"),
-                qb=qb,
-            )
-            downloadCand = tuple(mteam.scan(mt["pages"].split()))
+            mteam = MTeam(**config["mteam"], qb=qb)
+            downloadCand = tuple(mteam.scan())
         else:
             downloadCand = ()
 
@@ -971,7 +960,7 @@ def main():
     qb.dump_data()
 
     if logger:
-        logger.write(copy_to=config["log_backup"])
+        logger.write(copy_to=config["server"]["log_backup_path"])
 
 
 logger = Logger()
