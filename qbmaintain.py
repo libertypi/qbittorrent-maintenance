@@ -108,7 +108,6 @@ class qBittorrent:
     torrent_data: DataFrame
     history: DataFrame
     silence: Timestamp
-    expired: pd.Index
     is_ready: bool
     requires_download: bool
 
@@ -173,16 +172,15 @@ class qBittorrent:
 
     def _request(self, path, *, method="GET", ignore_error=False, **kwargs):
         """Communicate with qBittorrent API."""
-
         try:
-            res = requests.request(
-                method=method,
-                url=self._api_base + path,
+            r = requests.request(
+                method,
+                self._api_base + path,
                 timeout=9.1,
                 **kwargs,
             )
-            res.raise_for_status()
-            return res
+            r.raise_for_status()
+            return r
         except requests.RequestException as e:
             if not ignore_error:
                 raise
@@ -915,6 +913,7 @@ def parse_config(configfile="config.json") -> Dict[str, dict]:
             },
             "debug": {}
         } # yapf: disable
+        configfile = op.abspath(configfile)
         with open(configfile, "w", encoding="utf-8") as f:
             json.dump(default, f, indent=4)
         sys.exit(f'Please edit "{configfile}" before running me again.')
