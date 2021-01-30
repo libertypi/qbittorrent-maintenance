@@ -65,7 +65,6 @@ class Logger:
 
     def record(self, action: str, size: int, name: str):
         """Record one line of log."""
-
         self._log.append("{:17}    {:8}    {:>11}    {}\n".format(
             datetime.now().strftime("%D %T"),
             action,
@@ -176,10 +175,12 @@ class qBittorrent:
         """Communicate with qBittorrent API."""
 
         try:
-            res = requests.request(method=method,
-                                   url=self._api_base + path,
-                                   timeout=9.1,
-                                   **kwargs)
+            res = requests.request(
+                method=method,
+                url=self._api_base + path,
+                timeout=9.1,
+                **kwargs,
+            )
             res.raise_for_status()
             return res
         except requests.RequestException as e:
@@ -193,8 +194,8 @@ class qBittorrent:
         types = (DataFrame, DataFrame, DataFrame, Timestamp,
                  requests.cookies.RequestsCookieJar)
         try:
-            with open(self._datafile, mode="rb") as d:
-                data = pickle.load(d)
+            with open(self._datafile, mode="rb") as f:
+                data = pickle.load(f)
             if all(map(isinstance, data, types)):
                 (self.server_data, self.torrent_data, self.history,
                  self.silence, self.cookiejar) = data
@@ -205,9 +206,9 @@ class qBittorrent:
         except Exception as e:
             print(f"Reading data failed: {e}", file=sys.stderr)
             if not dryrun:
-                d = self._datafile
+                f = self._datafile
                 try:
-                    os.rename(d, f"{d}_{NOW.strftime('%y%m%d%H%M%S')}")
+                    os.rename(f, f"{f}_{NOW.strftime('%y%m%d%H%M%S')}")
                 except OSError:
                     pass
         self.server_data = self.torrent_data = self.history = None
@@ -252,12 +253,13 @@ class qBittorrent:
                 session.cookies = self.cookiejar
         return session
 
-    def _set_silence(self, **kwargs):
-        """Set a silent period if it is longer than the current setting.
+    def _set_silence(self, hours=0, minutes=0):
+        """Set a silent period in which the class would return `is_ready` as
+        False.
 
-        The keyword arguments are passed to the datetime.timedelta
-        constructor."""
-        silence = NOW + timedelta(**kwargs)
+        The silent period will only be set if it surpass the current setting.
+        """
+        silence = NOW + timedelta(hours=hours, minutes=minutes)
         if silence > self.silence:
             self.silence = silence
 
@@ -465,7 +467,7 @@ class qBittorrent:
             try:
                 self._request("torrents/add", method="POST", files=content)
             except requests.RequestException as e:
-                logger.record("Error", None, e)
+                logger.record("Error", None, str(e))
                 return
             if not self._STALED.isdisjoint(
                     self.states) and self.server_state["queueing"]:
@@ -632,7 +634,6 @@ class MTeam:
             self._shorten(urljoin(self.domain, path))))
 
     def scan(self) -> Iterator[Torrent]:
-        """Scan a list of pages and yield Torrent objects satisfy conditions."""
 
         from bs4 import BeautifulSoup
 
@@ -853,7 +854,6 @@ def humansize(size: int) -> str:
 
 def parse_args():
     """Parse arguments from the command line."""
-
     args = {"dryrun": False, "force": False, "remote": False}
     try:
         for arg in sys.argv[1:]:
@@ -881,14 +881,13 @@ def parse_args():
             "  -h    show this help message and exit\n"
             "  -d    dry run\n"
             "  -f    force download\n"
-            "  -r    override entries in 'server' config with that of 'debug'"
+            "  -r    override values in 'server' config with that of 'debug'"
             f"{e}")
     return args
 
 
 def parse_config(configfile="config.json") -> Dict[str, dict]:
     """Read or create config file."""
-
     try:
         with open(configfile, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -916,7 +915,6 @@ def parse_config(configfile="config.json") -> Dict[str, dict]:
             },
             "debug": {}
         } # yapf: disable
-        configfile = op.abspath(configfile)
         with open(configfile, "w", encoding="utf-8") as f:
             json.dump(default, f, indent=4)
         sys.exit(f'Please edit "{configfile}" before running me again.')
