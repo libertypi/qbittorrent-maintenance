@@ -63,24 +63,25 @@ class Logger:
     def __bool__(self):
         return not not self._log
 
-    def record(self, action: str, size: int, name: str):
+    def record(self, action: str, content: str, size: int = None):
         """Record one line of log."""
         self._log.append("{:17}    {:8}    {:>11}    {}\n".format(
             datetime.now().strftime("%D %T"),
             action,
             humansize(size),
-            name,
+            content,
         ))
 
-    def write(self, logfile="logfile.log", copy_to=None):
+    def write(self, logfile: str, copy_to: str = None):
         """Insert logs to the beginning of a logfile.
 
-        If `copy_to` is a directory or a file, logfile will be copied to the
-        destination.
+        If `copy_to` is a directory or a file, logfile will be copied there.
         """
+        if not self._log:
+            return
+        content = self.__str__()
+        print(" Logs ".center(50, "-"), content, sep="\n", end="")
         if dryrun:
-            print(" Logs ".center(50, "-"))
-            print(self, end="")
             return
         try:
             try:
@@ -89,12 +90,12 @@ class Logger:
                     f.readline()
                     backup = f.read()
                     f.seek(0)
-                    f.write(self.__str__())
+                    f.write(content)
                     f.write(backup)
                     f.truncate()
             except FileNotFoundError:
                 with open(logfile, "w", encoding="utf-8") as f:
-                    f.write(self.__str__())
+                    f.write(content)
             if copy_to:
                 shutil.copy(logfile, op.normpath(copy_to))
         except OSError as e:
@@ -202,7 +203,7 @@ class qBittorrent:
         except FileNotFoundError:
             pass
         except Exception as e:
-            print(f"Reading data failed: {e}", file=sys.stderr)
+            logger.record("Error", f"Reading data failed: {e}")
             if not dryrun:
                 f = self._datafile
                 try:
@@ -215,7 +216,6 @@ class qBittorrent:
 
     def dump_data(self):
         """Save data to disk."""
-
         if dryrun:
             return
         try:
@@ -223,9 +223,7 @@ class qBittorrent:
                 pickle.dump((self.server_data, self.torrent_data, self.history,
                              self.silence, self.cookiejar), f)
         except Exception as e:
-            msg = f"Saving data failed: {e}"
-            logger.record("Error", None, msg)
-            print(msg, file=sys.stderr)
+            logger.record("Error", f"Saving data failed: {e}")
 
     def init_session(self):
         """Reset and return a new requests session."""
@@ -342,7 +340,7 @@ class qBittorrent:
                 except OSError as e:
                     print(e, file=sys.stderr)
                 else:
-                    logger.record("Cleanup", None, name)
+                    logger.record("Cleanup", name)
 
     def requires_remove(self) -> bool:
         """Whether some torrents may need to be deleted.
@@ -443,7 +441,7 @@ class qBittorrent:
             }
             self._request("torrents/delete", params=params)
         for t in removeList:
-            logger.record("Remove", t.size, t.title)
+            logger.record("Remove", t.title, t.size)
         self._set_silence(minutes=30)
 
     def add_torrent(self, downloadList: Sequence[Torrent], downloader):
@@ -465,7 +463,7 @@ class qBittorrent:
             try:
                 self._request("torrents/add", method="POST", files=content)
             except requests.RequestException as e:
-                logger.record("Error", None, str(e))
+                logger.record("Error", f"Uploading torrent failed: {e}")
                 return
             if not self._STALED.isdisjoint(
                     self.states) and self.server_state["queueing"]:
@@ -495,7 +493,7 @@ class qBittorrent:
             except Exception as e:
                 print(f"Torrentool error: {e}", file=sys.stderr)
 
-            logger.record("Download", t.size, t.title)
+            logger.record("Download", t.title, t.size)
             data.append((t.id, NOW, t.expire))
             index.append(t.hash or t.id)
 
@@ -774,7 +772,7 @@ class MPSolver:
         status = solver.Solve(model)
 
         if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-            self.status = "Solution: {}. Walltime: {:.5f}s. Objective value: {}.".format(
+            self.status = "Solution: {}, walltime: {:.5f}, objective value: {}".format(
                 solver.StatusName(status), solver.WallTime(),
                 solver.ObjectiveValue())
             value = map(solver.BooleanValue, pool)
@@ -797,15 +795,15 @@ class MPSolver:
         final_usable_space = usable_space + removeSize - downloadSize
 
         print(sepSlim)
-        print("Usable space: {}. Max avail: {}.".format(
+        print("Usable space: {}, max avail: {}".format(
             humansize(usable_space),
             humansize(usable_space + removeCandSize),
         ))
-        print("Download candidates: {}. Total: {}.".format(
+        print("Download candidates: {}, size: {}".format(
             len(self.downloadCand),
             humansize(downloadCandSize),
         ))
-        print("Remove candidates: {}/{}. Total: {}.".format(
+        print("Remove candidates: {}/{}, size: {}".format(
             len(self.removeCand),
             len(self.qb.torrents),
             humansize(removeCandSize),
@@ -817,7 +815,7 @@ class MPSolver:
             final = getattr(self, prefix + "List")
             cand = getattr(self, prefix + "Cand")
             size = locals()[prefix + "Size"]
-            print("{}\n{}: {}/{}. Total: {}, {} peers.".format(
+            print("{}\n{}: {}/{}, size: {}, peer: {}".format(
                 sepSlim,
                 prefix.capitalize(),
                 len(final),
@@ -830,7 +828,7 @@ class MPSolver:
 
         print(sepSlim)
         print(self.status)
-        print("Usable space after operation: {} => {}.".format(
+        print("Usable space after operation: {} => {}".format(
             humansize(usable_space), humansize(final_usable_space)))
 
     @staticmethod
@@ -884,7 +882,7 @@ def parse_args():
     return args
 
 
-def parse_config(configfile="config.json") -> Dict[str, dict]:
+def parse_config(configfile: str) -> Dict[str, dict]:
     """Read or create config file."""
     try:
         with open(configfile, "r", encoding="utf-8") as f:
@@ -928,7 +926,7 @@ def main():
     dryrun = args["dryrun"]
 
     os.chdir(op.dirname(__file__))
-    config = parse_config()
+    config = parse_config("config.json")
     if args["remote"]:
         config["server"].update(config["debug"])
 
@@ -957,9 +955,7 @@ def main():
 
     qb.resume_paused()
     qb.dump_data()
-
-    if logger:
-        logger.write(copy_to=config["server"]["log_backup_path"])
+    logger.write("logfile.log", config["server"]["log_backup_path"])
 
 
 dryrun = False
