@@ -854,7 +854,7 @@ def parse_args():
     try:
         for arg in sys.argv[1:]:
             if arg.startswith("-"):
-                for c in arg.lstrip("-"):
+                for c in arg[1:]:
                     if c == "d":
                         args["dryrun"] = True
                     elif c == "f":
