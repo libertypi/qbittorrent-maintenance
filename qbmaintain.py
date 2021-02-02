@@ -885,7 +885,7 @@ def parse_args():
 def parse_config(configfile: str) -> Dict[str, dict]:
     """Read or create config file."""
     try:
-        with open(configfile, "r", encoding="utf-8") as f:
+        with open(configfile, "rb") as f:
             return json.load(f)
     except FileNotFoundError:
         default = {
