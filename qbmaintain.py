@@ -828,7 +828,7 @@ class MPSolver:
 
         print(sepSlim)
         print(self.status)
-        print("Usable space after operation: {} => {}".format(
+        print("Usable space change: {} => {}".format(
             humansize(usable_space), humansize(final_usable_space)))
 
     @staticmethod
@@ -879,7 +879,8 @@ def parse_args():
             "  -f    force download\n"
             "  -r    override values in 'server' config with that of 'debug'"
             f"{e}")
-    return args
+    else:
+        return args
 
 
 def parse_config(configfile: str) -> Dict[str, dict]:
