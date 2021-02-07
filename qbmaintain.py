@@ -612,9 +612,9 @@ class MTeam:
         print("logging in..", end="", flush=True)
         try:
             response = self.session.post(
-                url=urljoin(self.DOMAIN, "/takelogin.php"),
+                url=self.DOMAIN + "/takelogin.php",
                 data=self.account,
-                headers={"referer": urljoin(self.DOMAIN, "/login.php")})
+                headers={"referer": self.DOMAIN + "/login.php"})
             response.raise_for_status()
             response = self.session.get(url, timeout=(6.1, 30))
             response.raise_for_status()
