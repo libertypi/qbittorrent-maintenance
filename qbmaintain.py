@@ -573,9 +573,10 @@ class qBittorrent:
 class MTeam:
     """A cumbersome MTeam downloader."""
 
+    DOMAIN = "https://pt.m-team.cc"
+
     def __init__(self, *, username: str, password: str, peer_slope: float,
-                 peer_intercept: float, domain: str, pages: Sequence[str],
-                 qb: qBittorrent):
+                 peer_intercept: float, pages: Sequence[str], qb: qBittorrent):
         """Minimum peer requirement subjects to:
 
         Peer >= A * Size(GiB) + B
@@ -586,14 +587,13 @@ class MTeam:
         self.account = {"username": username, "password": password}
         self.A = peer_slope / BYTESIZE["GiB"]
         self.B = peer_intercept
-        self.domain = domain
         self.pages = pages
         self.qb = qb
         self.session = qb.session
 
     def get(self, path: str):
 
-        url = urljoin(self.domain, path)
+        url = urljoin(self.DOMAIN, path)
         print(f'Connecting: {self._shorten(url)} ..', end="", flush=True)
         try:
             response = self.session.get(url, timeout=(6.1, 30))
@@ -612,9 +612,9 @@ class MTeam:
         print("logging in..", end="", flush=True)
         try:
             response = self.session.post(
-                url=urljoin(self.domain, "/takelogin.php"),
+                url=urljoin(self.DOMAIN, "/takelogin.php"),
                 data=self.account,
-                headers={"referer": urljoin(self.domain, "/login.php")})
+                headers={"referer": urljoin(self.DOMAIN, "/login.php")})
             response.raise_for_status()
             response = self.session.get(url, timeout=(6.1, 30))
             response.raise_for_status()
@@ -627,7 +627,7 @@ class MTeam:
 
         print("invalid login", file=sys.stderr)
         self.get = lambda path: print("Skipped: {}".format(
-            self._shorten(urljoin(self.domain, path))))
+            self._shorten(urljoin(self.DOMAIN, path))))
 
     def scan(self) -> Iterator[Torrent]:
 
@@ -904,7 +904,6 @@ def parse_config(configfile: str) -> Dict[str, dict]:
                 "password": "",
                 "peer_slope": 0.3,
                 "peer_intercept": 30,
-                "domain": "https://pt.m-team.cc",
                 "pages": [
                     "/adult.php?spstate=2&sort=8&type=desc",
                     "/torrents.php?spstate=2&sort=8&type=desc"
