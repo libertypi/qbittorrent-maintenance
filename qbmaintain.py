@@ -415,6 +415,7 @@ class qBittorrent:
         thresholds. We would promote new torrents to the top of the queue
         afterwards if such torrents exist.
         """
+
         if self.server_state["queueing"]:
             max_dl: int = self.get_pref("max_active_downloads")
             if max_dl > 0:
@@ -870,7 +871,7 @@ def parse_args():
             raise ValueError(f"\n\nunrecognized arguments: {arg}")
     except ValueError as e:
         sys.exit(
-            f"usage: {op.basename(__file__)} [-h] [-d] [-f] [-r]\n\n"
+            f"usage: {__file__} [-h] [-d] [-f] [-r]\n\n"
             "The Ultimate qBittorrent Maintenance Tool\n"
             "Author: David Pi\n\n"
             "optional arguments:\n"
