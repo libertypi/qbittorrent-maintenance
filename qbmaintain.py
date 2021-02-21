@@ -212,7 +212,7 @@ class qBittorrent:
                     pass
         self.server_data = self.torrent_data = self.history = None
         self.silence = NOW
-        self.init_session()
+        self.reset_session()
 
     def dump_data(self):
         """Save data to disk."""
@@ -225,7 +225,7 @@ class qBittorrent:
         except Exception as e:
             logger.record("Error", f"Saving data failed: {e}")
 
-    def init_session(self):
+    def reset_session(self):
         """Reset and return a new requests session."""
         self._session = self.cookiejar = None
         return self.session
@@ -475,7 +475,7 @@ class qBittorrent:
                     ignore_error=True,
                     params={"hashes": "|".join(t.hash for t in downloadList)})
 
-        from torrentool.api import Torrent as TorrentParser
+        from torrentool.api import Torrent as Torrentool
 
         # convert timedelta to timestamp
         # read hash and name from torrent file
@@ -487,7 +487,7 @@ class qBittorrent:
             else:
                 t.expire = pd.NaT
             try:
-                torrent = TorrentParser.from_string(content[t.id])
+                torrent = Torrentool.from_string(content[t.id])
                 t.hash = torrent.info_hash
                 t.title = torrent.name
                 t.size = torrent.total_size
@@ -604,7 +604,7 @@ class MTeam:
             print(e, file=sys.stderr)
             return
         except Exception as e:
-            self.session = self.qb.init_session()
+            self.session = self.qb.reset_session()
         else:
             if "/login.php" not in response.url:
                 print("ok")
@@ -851,7 +851,7 @@ def humansize(size: int) -> str:
 
 def parse_args():
     """Parse arguments from the command line."""
-    args = {"dryrun": False, "force": False, "remote": False}
+    args = {"dryrun": False, "force": False}
     try:
         for arg in sys.argv[1:]:
             if arg.startswith("-"):
@@ -860,26 +860,22 @@ def parse_args():
                         args["dryrun"] = True
                     elif c == "f":
                         args["force"] = True
-                    elif c == "r":
-                        args["remote"] = True
                     elif c == "h":
                         raise ValueError
                     else:
                         break
                 else:
                     continue
-            raise ValueError(f"\n\nunrecognized arguments: {arg}")
+            raise ValueError(f"\n\nerror: unrecognized argument -- '{arg}'")
     except ValueError as e:
-        sys.exit(
-            f"usage: {__file__} [-h] [-d] [-f] [-r]\n\n"
-            "The Ultimate qBittorrent Maintenance Tool\n"
-            "Author: David Pi\n\n"
-            "optional arguments:\n"
-            "  -h    show this help message and exit\n"
-            "  -d    dry run\n"
-            "  -f    force download\n"
-            "  -r    override values in 'server' config with that of 'debug'"
-            f"{e}")
+        sys.exit(f"usage: {__file__} [-h] [-d] [-f]\n\n"
+                 "The Ultimate qBittorrent Maintenance Tool\n"
+                 "Author: David Pi\n\n"
+                 "optional arguments:\n"
+                 "  -h    show this help message and exit\n"
+                 "  -d    dry run\n"
+                 "  -f    force download"
+                 f"{e}")
     else:
         return args
 
@@ -910,7 +906,6 @@ def parse_config(configfile: str) -> Dict[str, dict]:
                     "/torrents.php?spstate=2&sort=8&type=desc"
                 ]
             },
-            "debug": {}
         } # yapf: disable
         configfile = op.abspath(configfile)
         with open(configfile, "w", encoding="utf-8") as f:
@@ -928,8 +923,6 @@ def main():
 
     os.chdir(op.dirname(__file__))
     config = parse_config("config.json")
-    if args["remote"]:
-        config["server"].update(config["debug"])
 
     qb = qBittorrent(**config["server"])
 
