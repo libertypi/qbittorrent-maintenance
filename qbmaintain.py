@@ -523,7 +523,7 @@ class qBittorrent:
     def usable_space(self) -> int:
         """Return usable space on seed_dir.
 
-        `usable_space` = `free_space_on_disk` - `disk_quota` - `amount_left_to_download`
+        usable_space = free_space_on_disk - disk_quota - amount_left_to_download
         """
         s = self._usable_space
         if s is None:
@@ -724,11 +724,11 @@ class MPSolver:
     Maximize obtained peers under constraints.
 
     ### Constraints:
-    -   `download_size` - `removed_size` <= `usable_space`
+    -   `download_size - removed_size <= usable_space`
 
-        -   infeasible when `usable_space` + `removed_size` < 0
+        -   infeasible when `usable_space + removed_size < 0`
 
-    -   `downloads` - `removes[downloading]` <= max download slot
+    -   `download_count - removes[downloading] <= max_download_slot`
 
         -   never exceed qBittorrent max_active_downloads limit, if exists.
 
