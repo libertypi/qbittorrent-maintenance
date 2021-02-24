@@ -724,16 +724,16 @@ class MPSolver:
     Maximize obtained peers under constraints.
 
     ### Constraints:
-    -   `download_size - removed_size <= usable_space`
+    -   download_size - removed_size <= usable_space
 
-        -   infeasible when `usable_space + removed_size < 0`
+        infeasible when usable_space + removed_size < 0
 
-    -   `download_count - removes[downloading] <= max_download_slot`
+    -   download_count - downloading_in_removes <= max_download_slot
 
         -   never exceed qBittorrent max_active_downloads limit, if exists.
 
     ### Objective:
-    -   Maximize: `download_peer` - `removed_peer`
+    -   Maximize: download_peer - removed_peer
     """
 
     def __init__(self, *, removeCand: Iterable[Removable],
