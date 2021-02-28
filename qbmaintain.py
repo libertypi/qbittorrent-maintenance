@@ -728,12 +728,12 @@ class MPSolver:
 
         infeasible when usable_space + removed_size < 0
 
-    -   download_count - downloading_in_removes <= max_download_slot
+    -   download_count - removed_downloading <= max_download_slot
 
-        -   never exceed qBittorrent max_active_downloads limit, if exists.
+        never exceed qBittorrent max_active_downloads limit, if exists.
 
     ### Objective:
-    -   Maximize: download_peer - removed_peer
+        Maximize: download_peer - removed_peer
     """
 
     def __init__(self, *, removeCand: Iterable[Removable],
