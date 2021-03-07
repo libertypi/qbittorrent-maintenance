@@ -73,9 +73,9 @@ class Logger:
         ))
 
     def write(self, logfile: str, copy_to: str = None):
-        """Insert logs to the beginning of a logfile.
+        """Insert logs at the beginning of a logfile.
 
-        If `copy_to` is a directory or a file, logfile will be copied there.
+        If `copy_to` is not None, logfile will be copied there.
         """
         if not self._log:
             return
@@ -97,7 +97,7 @@ class Logger:
                 with open(logfile, "w", encoding="utf-8") as f:
                     f.write(content)
             if copy_to:
-                shutil.copy(logfile, op.normpath(copy_to))
+                shutil.copy(logfile, copy_to)
         except OSError as e:
             print(e, file=sys.stderr)
 
