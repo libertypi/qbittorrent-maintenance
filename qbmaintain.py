@@ -782,7 +782,8 @@ class MPSolver:
         else:
             self.status = "CP-SAT solver cannot find a solution. Status: {}".format(
                 solver.StatusName(status))
-            self.downloadList = self.removeList = ()
+            self.downloadList = ()
+            self.removeList = self.removeCand if qb.usable_space < 0 else ()
 
     def report(self):
         """Print report to stdout."""
