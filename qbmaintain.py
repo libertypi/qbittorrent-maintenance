@@ -574,10 +574,9 @@ class qBittorrent:
 class MTeam:
     """A cumbersome MTeam downloader."""
 
-    DOMAIN = "https://pt.m-team.cc"
-
-    def __init__(self, *, username: str, password: str, peer_slope: float,
-                 peer_intercept: float, pages: Sequence[str], qb: qBittorrent):
+    def __init__(self, *, domain: str, username: str, password: str,
+                 peer_slope: float, peer_intercept: float, pages: Sequence[str],
+                 qb: qBittorrent):
         """Minimum peer requirement subjects to:
 
         Peer >= A * Size(GiB) + B
@@ -585,6 +584,7 @@ class MTeam:
         Where A, B is defined by params `peer_slope` and `peer_intercept`.
         """
 
+        self.domain = domain
         self.account = {"username": username, "password": password}
         self.A = peer_slope / BYTESIZE["GiB"]
         self.B = peer_intercept
@@ -594,7 +594,7 @@ class MTeam:
 
     def get(self, path: str):
 
-        url = urljoin(self.DOMAIN, path)
+        url = urljoin(self.domain, path)
         print(f'Connecting: {self._shorten(url)} ..', end="", flush=True)
         try:
             response = self.session.get(url, timeout=(6.1, 30))
@@ -613,9 +613,9 @@ class MTeam:
         print("logging in..", end="", flush=True)
         try:
             response = self.session.post(
-                url=self.DOMAIN + "/takelogin.php",
+                url=urljoin(self.domain, "takelogin.php"),
                 data=self.account,
-                headers={"referer": self.DOMAIN + "/login.php"})
+                headers={"referer": urljoin(self.domain, "login.php")})
             response.raise_for_status()
             response = self.session.get(url, timeout=(6.1, 30))
             response.raise_for_status()
@@ -627,8 +627,8 @@ class MTeam:
             return response
 
         print("invalid login", file=sys.stderr)
-        self.get = lambda path: print("Skipped: {}".format(
-            self._shorten(urljoin(self.DOMAIN, path))))
+        self.get = lambda path: print(
+            f"Skipped: {self._shorten(urljoin(self.domain, path))}")
 
     def scan(self) -> Iterator[Torrent]:
 
@@ -851,7 +851,7 @@ def humansize(size: int) -> str:
 
 
 def parse_args():
-    """Parse arguments from the command line."""
+    """Parse command line arguments."""
     args = {"dryrun": False, "force": False}
     try:
         for arg in sys.argv[1:]:
@@ -898,6 +898,7 @@ def parse_config(configfile: str) -> Dict[str, dict]:
                 "log_backup_path": None,
             },
             "mteam": {
+                "domain": "https://pt.m-team.cc",
                 "username": "",
                 "password": "",
                 "peer_slope": 0.3,
