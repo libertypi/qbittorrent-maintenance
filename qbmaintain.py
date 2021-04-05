@@ -16,6 +16,7 @@ import pandas as pd
 import requests
 from pandas import DataFrame, Timestamp
 
+stderr_write = sys.stderr.write
 NOW = Timestamp.now()
 BYTESIZE: Dict[str, int] = {
     k: v for kk, v in (
@@ -80,7 +81,8 @@ class Logger:
         if not self._log:
             return
         content = self.__str__()
-        print(" Logs ".center(50, "-"), content, sep="\n", end="")
+        stderr_write(f"Logs:\n{'-' * 80}\n")
+        stderr_write(content)
         if dryrun:
             return
         try:
@@ -99,7 +101,7 @@ class Logger:
             if copy_to:
                 shutil.copy(logfile, copy_to)
         except OSError as e:
-            print(e, file=sys.stderr)
+            stderr_write(f"{e}\n")
 
 
 class qBittorrent:
@@ -151,8 +153,9 @@ class qBittorrent:
         self._record()
 
         speeds = self.speeds
-        print("Avg speed (last hour): UL: {}/s, DL: {}/s".format(
-            humansize(speeds[0]), humansize(speeds[1])))
+        stderr_write(
+            f"Avg speed (last hour): UL: {humansize(speeds[0])}/s, DL: {humansize(speeds[1])}/s\n"
+        )
 
         # Whether qBittorrent is ready for maintenance. The value should be
         # checked before taking any actions.
@@ -185,7 +188,7 @@ class qBittorrent:
         except requests.RequestException as e:
             if not ignore_error:
                 raise
-            print(e, file=sys.stderr)
+            stderr_write(f"{e}\n")
 
     def _load_data(self):
         """Load data objects from pickle."""
@@ -327,7 +330,7 @@ class qBittorrent:
             if name not in names and re.sub(r"\.!qB$", "", name) not in names:
                 self._usable_space = None
                 path = op.join(seed_dir, name)
-                print(f"Cleanup: {path}")
+                stderr_write(f"Cleanup: {path}\n")
                 try:
                     if dryrun:
                         pass
@@ -338,7 +341,7 @@ class qBittorrent:
                     else:
                         os.unlink(path)
                 except OSError as e:
-                    print(e, file=sys.stderr)
+                    stderr_write(f"{e}\n")
                 else:
                     logger.record("Cleanup", name)
 
@@ -364,7 +367,7 @@ class qBittorrent:
             breaks = jenks_breaks(speeds, nb_class=min(speeds.size - 1, 3))[1]
         except Exception as e:
             if speeds.size > 2:
-                print(f"Jenkspy failed: {e}", file=sys.stderr)
+                stderr_write(f"Jenkspy failed: {e}\n")
             breaks = speeds.mean()
 
         torrents = self.torrents
@@ -492,7 +495,7 @@ class qBittorrent:
                 t.title = torrent.name
                 t.size = torrent.total_size
             except Exception as e:
-                print(f"Torrentool error: {e}", file=sys.stderr)
+                stderr_write(f"Torrentool error: {e}\n")
 
             logger.record("Download", t.title, t.size)
             data.append((t.id, NOW, t.expire))
@@ -513,7 +516,7 @@ class qBittorrent:
     def resume_paused(self):
         """If any torrent is paused, for any reason, resume."""
         if not self._PAUSED.isdisjoint(self.states):
-            print("Resume torrents.")
+            stderr_write("Resume torrents.\n")
             if not dryrun:
                 self._request("torrents/resume",
                               ignore_error=True,
@@ -595,22 +598,24 @@ class MTeam:
     def get(self, path: str):
 
         url = urljoin(self.domain, path)
-        print(f'Connecting: {self._shorten(url)} ..', end="", flush=True)
+        stderr_write(f'Connecting: {url} ..')
+        sys.stderr.flush()
         try:
             response = self.session.get(url, timeout=(6.1, 30))
             response.raise_for_status()
         except (requests.ConnectionError, requests.HTTPError,
                 requests.Timeout) as e:
-            print(e, file=sys.stderr)
+            stderr_write(f"{e}\n")
             return
         except Exception as e:
             self.session = self.qb.reset_session()
         else:
             if "/login.php" not in response.url:
-                print("ok")
+                stderr_write("ok\n")
                 return response
 
-        print("logging in..", end="", flush=True)
+        stderr_write("logging in..")
+        sys.stderr.flush()
         try:
             response = self.session.post(
                 url=urljoin(self.domain, "takelogin.php"),
@@ -620,15 +625,15 @@ class MTeam:
             response = self.session.get(url, timeout=(6.1, 30))
             response.raise_for_status()
         except Exception as e:
-            print(e, file=sys.stderr)
+            stderr_write(f"{e}\n")
             return
         if "/login.php" not in response.url:
-            print("ok")
+            stderr_write("ok\n")
             return response
 
-        print("invalid login", file=sys.stderr)
-        self.get = lambda path: print(
-            f"Skipped: {self._shorten(urljoin(self.domain, path))}")
+        stderr_write("invalid login\n")
+        self.get = lambda path: stderr_write(
+            f"Skipped: {urljoin(self.domain, path)}\n")
 
     def scan(self) -> Iterator[Torrent]:
 
@@ -658,7 +663,7 @@ class MTeam:
             except AttributeError:
                 continue
             except StopIteration:
-                print(f"CSS selector broken: {page}", file=sys.stderr)
+                stderr_write(f"CSS selector broken: {page}\n")
                 continue
 
             for i, td in enumerate(row):
@@ -700,7 +705,7 @@ class MTeam:
                     title = title.get("title") or title.get_text(strip=True)
 
                 except Exception as e:
-                    print(f"Parsing error: {e}", file=sys.stderr)
+                    stderr_write(f"Parsing error: {e}\n")
 
                 else:
                     visited.add(tid)
@@ -712,10 +717,6 @@ class MTeam:
                         expire=expire,
                         title=title,
                     )
-
-    @staticmethod
-    def _shorten(s: str, k: int = 60):
-        return s if len(s) <= k else s[:k - 4] + "[...]"
 
 
 class MPSolver:
@@ -773,14 +774,14 @@ class MPSolver:
         status = solver.Solve(model)
 
         if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-            self.status = "Solution: {}, walltime: {:.5f}, objective value: {}".format(
+            self.status = "Solution: {}, walltime: {:.5f}, objective value: {}\n".format(
                 solver.StatusName(status), solver.WallTime(),
                 solver.ObjectiveValue())
             value = map(solver.BooleanValue, pool)
             self.downloadList = tuple(t for t in downloadCand if next(value))
             self.removeList = tuple(t for t in removeCand if next(value))
         else:
-            self.status = "CP-SAT solver cannot find a solution. Status: {}".format(
+            self.status = "CP-SAT solver cannot find a solution. Status: {}\n".format(
                 solver.StatusName(status))
             self.downloadList = ()
             self.removeList = self.removeCand if qb.usable_space < 0 else ()
@@ -788,7 +789,7 @@ class MPSolver:
     def report(self):
         """Print report to stdout."""
 
-        sepSlim = "-" * 50
+        sepSlim = "-" * 50 + "\n"
         removeCandSize = self._sumsize(self.removeCand)
         downloadCandSize = self._sumsize(self.downloadCand)
         removeSize = self._sumsize(self.removeList)
@@ -796,28 +797,28 @@ class MPSolver:
         usable_space = self.qb.usable_space
         final_usable_space = usable_space + removeSize - downloadSize
 
-        print(sepSlim)
-        print("Usable space: {}, max avail: {}".format(
+        stderr_write(sepSlim)
+        stderr_write("Usable space: {}, max avail: {}\n".format(
             humansize(usable_space),
             humansize(usable_space + removeCandSize),
         ))
-        print("Download candidates: {}, size: {}".format(
+        stderr_write("Download candidates: {}, size: {}\n".format(
             len(self.downloadCand),
             humansize(downloadCandSize),
         ))
-        print("Remove candidates: {}/{}, size: {}".format(
+        stderr_write("Remove candidates: {}/{}, size: {}\n".format(
             len(self.removeCand),
             len(self.qb.torrents),
             humansize(removeCandSize),
         ))
         for t in self.removeCand:
-            print(f"[{humansize(t.size):>11}|{t.peer:4d}P] {t.title}")
+            stderr_write(f"[{humansize(t.size):>11}|{t.peer:4d}P] {t.title}\n")
 
         for prefix in "remove", "download":
             final = getattr(self, prefix + "List")
             cand = getattr(self, prefix + "Cand")
             size = locals()[prefix + "Size"]
-            print("{}\n{}: {}/{}, size: {}, peer: {}".format(
+            stderr_write("{}{}: {}/{}, size: {}, peer: {}\n".format(
                 sepSlim,
                 prefix.capitalize(),
                 len(final),
@@ -826,11 +827,12 @@ class MPSolver:
                 sum(t.peer for t in final),
             ))
             for t in final:
-                print(f"[{humansize(t.size):>11}|{t.peer:4d}P] {t.title}")
+                stderr_write(
+                    f"[{humansize(t.size):>11}|{t.peer:4d}P] {t.title}\n")
 
-        print(sepSlim)
-        print(self.status)
-        print("Usable space change: {} => {}".format(
+        stderr_write(sepSlim)
+        stderr_write(self.status)
+        stderr_write("Usable space change: {} -> {}\n".format(
             humansize(usable_space), humansize(final_usable_space)))
 
     @staticmethod
