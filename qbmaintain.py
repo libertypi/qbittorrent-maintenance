@@ -843,13 +843,13 @@ class MPSolver:
 def humansize(size: int) -> str:
     """Convert bytes to human readable sizes."""
     try:
-        for suffix in ("KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"):
-            size /= 1024
+        for suffix in ("", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi"):
             if -1024 < size < 1024:
-                return f"{size:.2f} {suffix}"
+                return f"{size:.2f} {suffix}B"
+            size /= 1024
+        return f"{size:.2f} YiB"
     except TypeError:
-        pass
-    return "NaN"
+        return "NaN"
 
 
 def parse_args():
