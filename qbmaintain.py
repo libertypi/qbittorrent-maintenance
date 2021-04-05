@@ -856,33 +856,30 @@ def humansize(size: int) -> str:
 
 def parse_args():
     """Parse command line arguments."""
-    args = {"dryrun": False, "force": False}
-    try:
-        for arg in sys.argv[1:]:
-            if arg.startswith("-"):
-                for c in arg[1:]:
-                    if c == "d":
-                        args["dryrun"] = True
-                    elif c == "f":
-                        args["force"] = True
-                    elif c == "h":
-                        raise ValueError
-                    else:
-                        break
+    result = {"dryrun": False, "force": False}
+    for arg in sys.argv[1:]:
+        if arg.startswith("-"):
+            if arg == "--":
+                break
+            for c in arg[1:]:
+                if c == "d":
+                    result["dryrun"] = True
+                elif c == "f":
+                    result["force"] = True
+                elif c == "h":
+                    stderr_write(
+                        f"usage: {__file__} [-h] [-d] [-f]\n\n"
+                        "The Ultimate qBittorrent Maintenance Tool\n"
+                        "Author: David Pi\n\n"
+                        "optional arguments:\n"
+                        "  -h    show this help message and exit\n"
+                        "  -d    perform a dry run with no changes made\n"
+                        "  -f    force start a maintenance task\n")
+                    sys.exit()
                 else:
-                    continue
-            raise ValueError(f"\n\nerror: unrecognized argument -- '{arg}'")
-    except ValueError as e:
-        sys.exit(f"usage: {__file__} [-h] [-d] [-f]\n\n"
-                 "The Ultimate qBittorrent Maintenance Tool\n"
-                 "Author: David Pi\n\n"
-                 "optional arguments:\n"
-                 "  -h    show this help message and exit\n"
-                 "  -d    dry run\n"
-                 "  -f    force download"
-                 f"{e}")
-    else:
-        return args
+                    sys.exit(f"error: unrecognized argument -- '{c}'\n"
+                             f"try '{__file__} -h' for more information")
+    return result
 
 
 def parse_config(configfile: str) -> Dict[str, dict]:
