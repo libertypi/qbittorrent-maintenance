@@ -847,9 +847,11 @@ def humansize(size: int) -> str:
             if -1024 < size < 1024:
                 return f"{size:.2f} {suffix}B"
             size /= 1024
-        return f"{size:.2f} YiB"
+        if size >= 1 or size <= -1:
+            return f"{size:.2f} YiB"
     except TypeError:
-        return "NaN"
+        pass
+    return "NaN"
 
 
 def parse_args():
