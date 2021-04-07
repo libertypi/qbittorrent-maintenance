@@ -239,13 +239,18 @@ class qBittorrent:
     def session(self):
         session = self._session
         if session is None:
+            from urllib3 import Retry
             session = self._session = requests.Session()
             session.headers.update({
-                "User-Agent":
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:80.0) "
-                    "Gecko/20100101 Firefox/80.0"
+                "User-Agent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                              'AppleWebKit/537.36 (KHTML, like Gecko) '
+                              'Chrome/88.0.4324.104 Safari/537.36'
             })
-            adapter = requests.adapters.HTTPAdapter(max_retries=5)
+            adapter = requests.adapters.HTTPAdapter(max_retries=Retry(
+                total=5,
+                status_forcelist=frozenset((500, 502, 503, 504, 521)),
+                backoff_factor=0.3,
+            ))
             session.mount("http://", adapter)
             session.mount("https://", adapter)
             if self.cookiejar is None:
