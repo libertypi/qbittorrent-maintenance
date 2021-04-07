@@ -208,7 +208,7 @@ class qBittorrent:
         except FileNotFoundError:
             pass
         except Exception as e:
-            logger.record("Error", f"Reading data failed: {e}")
+            logger.record("Error", f"Corrupted data: {e}")
             if not dryrun:
                 f = self._datafile
                 try:
