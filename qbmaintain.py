@@ -70,7 +70,7 @@ class Logger:
     def record(self, action: str, content: str, size: int = None):
         """Record one line of log."""
         if isinstance(content, str):
-            content = re.sub(r"[\t\n\r\f\v]", " ", content)
+            content = re.sub(r"[\x00-\x1f\x7f]", " ", content)
         self._log.append(
             self._fmt.format(datetime.now().strftime("%D %T"), action,
                              humansize(size), content))
