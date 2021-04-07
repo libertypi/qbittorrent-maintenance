@@ -70,7 +70,7 @@ class Logger:
     def record(self, action: str, content: str, size: int = None):
         """Record one line of log."""
         if isinstance(content, str):
-            content = re.sub(r"[\x01-\x1f\x7f]", " ", content)
+            content = re.sub(r"[\t\n\r\f\v]+", " ", content)
         self._log.append(
             self._fmt.format(datetime.now().strftime("%D %T"), action,
                              humansize(size), content))
@@ -83,7 +83,7 @@ class Logger:
         if not self._log:
             return
         content = self.__str__()
-        stderr_write(f"Logs:\n{'-' * 80}\n")
+        stderr_write("Logs:\n{}\n".format("-" * 80))
         stderr_write(content)
         if dryrun:
             return
