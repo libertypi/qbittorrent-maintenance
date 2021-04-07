@@ -16,7 +16,7 @@ import pandas as pd
 import requests
 from pandas import DataFrame, Timestamp
 
-stderr_write = sys.stderr.write
+stderr_wt = sys.stderr.write
 NOW = Timestamp.now()
 BYTESIZE: Dict[str, int] = {
     k: v for kk, v in (
@@ -83,8 +83,8 @@ class Logger:
         if not self._log:
             return
         content = self.__str__()
-        stderr_write("Logs:\n{}\n".format("-" * 80))
-        stderr_write(content)
+        stderr_wt("Logs:\n{}\n".format("-" * 80))
+        stderr_wt(content)
         if dryrun:
             return
         try:
@@ -103,7 +103,7 @@ class Logger:
             if copy_to:
                 shutil.copy(logfile, copy_to)
         except OSError as e:
-            stderr_write(f"{e}\n")
+            stderr_wt(f"{e}\n")
 
 
 class qBittorrent:
@@ -155,7 +155,7 @@ class qBittorrent:
         self._record()
 
         speeds = self.speeds
-        stderr_write(
+        stderr_wt(
             f"Avg speed (last hour): UL: {humansize(speeds[0])}/s, DL: {humansize(speeds[1])}/s\n"
         )
 
@@ -190,7 +190,7 @@ class qBittorrent:
         except requests.RequestException as e:
             if not ignore_error:
                 raise
-            stderr_write(f"{e}\n")
+            stderr_wt(f"{e}\n")
 
     def _load_data(self):
         """Load data objects from pickle."""
@@ -332,7 +332,7 @@ class qBittorrent:
             if name not in names and re.sub(r"\.!qB$", "", name) not in names:
                 self._usable_space = None
                 path = op.join(seed_dir, name)
-                stderr_write(f"Cleanup: {path}\n")
+                stderr_wt(f"Cleanup: {path}\n")
                 try:
                     if dryrun:
                         pass
@@ -343,7 +343,7 @@ class qBittorrent:
                     else:
                         os.unlink(path)
                 except OSError as e:
-                    stderr_write(f"{e}\n")
+                    stderr_wt(f"{e}\n")
                 else:
                     logger.record("Cleanup", name)
 
@@ -369,7 +369,7 @@ class qBittorrent:
             breaks = jenks_breaks(speeds, nb_class=min(speeds.size - 1, 3))[1]
         except Exception as e:
             if speeds.size > 2:
-                stderr_write(f"Jenkspy failed: {e}\n")
+                stderr_wt(f"Jenkspy failed: {e}\n")
             breaks = speeds.mean()
 
         torrents = self.torrents
@@ -497,7 +497,7 @@ class qBittorrent:
                 t.title = torrent.name
                 t.size = torrent.total_size
             except Exception as e:
-                stderr_write(f"Torrentool error: {e}\n")
+                stderr_wt(f"Torrentool error: {e}\n")
 
             logger.record("Download", t.title, t.size)
             data.append((t.id, NOW, t.expire))
@@ -518,7 +518,7 @@ class qBittorrent:
     def resume_paused(self):
         """If any torrent is paused, for any reason, resume."""
         if not self._PAUSED.isdisjoint(self.states):
-            stderr_write("Resume torrents.\n")
+            stderr_wt("Resume torrents.\n")
             if not dryrun:
                 self._request("torrents/resume",
                               ignore_error=True,
@@ -600,23 +600,23 @@ class MTeam:
     def get(self, path: str):
 
         url = urljoin(self.domain, path)
-        stderr_write(f'Connecting: {url} ..')
+        stderr_wt(f'Connecting: {url} ..')
         sys.stderr.flush()
         try:
             response = self.session.get(url, timeout=(6.1, 30))
             response.raise_for_status()
         except (requests.ConnectionError, requests.HTTPError,
                 requests.Timeout) as e:
-            stderr_write(f"{e}\n")
+            stderr_wt(f"{e}\n")
             return
         except Exception as e:
             self.session = self.qb.reset_session()
         else:
             if "/login.php" not in response.url:
-                stderr_write("ok\n")
+                stderr_wt("ok\n")
                 return response
 
-        stderr_write("logging in..")
+        stderr_wt("logging in..")
         sys.stderr.flush()
         try:
             response = self.session.post(
@@ -627,14 +627,14 @@ class MTeam:
             response = self.session.get(url, timeout=(6.1, 30))
             response.raise_for_status()
         except Exception as e:
-            stderr_write(f"{e}\n")
+            stderr_wt(f"{e}\n")
             return
         if "/login.php" not in response.url:
-            stderr_write("ok\n")
+            stderr_wt("ok\n")
             return response
 
-        stderr_write("invalid login\n")
-        self.get = lambda path: stderr_write(
+        stderr_wt("invalid login\n")
+        self.get = lambda path: stderr_wt(
             f"Skipped: {urljoin(self.domain, path)}\n")
 
     def scan(self) -> Iterator[Torrent]:
@@ -665,7 +665,7 @@ class MTeam:
             except AttributeError:
                 continue
             except StopIteration:
-                stderr_write(f"CSS selector broken: {page}\n")
+                stderr_wt(f"CSS selector broken: {page}\n")
                 continue
 
             for i, td in enumerate(row):
@@ -707,7 +707,7 @@ class MTeam:
                     title = title.get("title") or title.get_text(strip=True)
 
                 except Exception as e:
-                    stderr_write(f"Parsing error: {e}\n")
+                    stderr_wt(f"Parsing error: {e}\n")
 
                 else:
                     visited.add(tid)
@@ -789,7 +789,7 @@ class MPSolver:
             self.removeList = self.removeCand if qb.usable_space < 0 else ()
 
     def report(self):
-        """Print report to stdout."""
+        """Print report to stderr."""
 
         sepSlim = "-" * 50 + "\n"
         removeCandSize = self._sumsize(self.removeCand)
@@ -799,28 +799,28 @@ class MPSolver:
         usable_space = self.qb.usable_space
         final_usable_space = usable_space + removeSize - downloadSize
 
-        stderr_write(sepSlim)
-        stderr_write("Usable space: {}, max avail: {}\n".format(
+        stderr_wt(sepSlim)
+        stderr_wt("Usable space: {}, max avail: {}\n".format(
             humansize(usable_space),
             humansize(usable_space + removeCandSize),
         ))
-        stderr_write("Download candidates: {}, size: {}\n".format(
+        stderr_wt("Download candidates: {}, size: {}\n".format(
             len(self.downloadCand),
             humansize(downloadCandSize),
         ))
-        stderr_write("Remove candidates: {}/{}, size: {}\n".format(
+        stderr_wt("Remove candidates: {}/{}, size: {}\n".format(
             len(self.removeCand),
             len(self.qb.torrents),
             humansize(removeCandSize),
         ))
         for t in self.removeCand:
-            stderr_write(f"[{humansize(t.size):>11}|{t.peer:4d}P] {t.title}\n")
+            stderr_wt(f"[{humansize(t.size):>11}|{t.peer:4d}P] {t.title}\n")
 
         for prefix in "remove", "download":
             final = getattr(self, prefix + "List")
             cand = getattr(self, prefix + "Cand")
             size = locals()[prefix + "Size"]
-            stderr_write("{}{}: {}/{}, size: {}, peer: {}\n".format(
+            stderr_wt("{}{}: {}/{}, size: {}, peer: {}\n".format(
                 sepSlim,
                 prefix.capitalize(),
                 len(final),
@@ -829,12 +829,11 @@ class MPSolver:
                 sum(t.peer for t in final),
             ))
             for t in final:
-                stderr_write(
-                    f"[{humansize(t.size):>11}|{t.peer:4d}P] {t.title}\n")
+                stderr_wt(f"[{humansize(t.size):>11}|{t.peer:4d}P] {t.title}\n")
 
-        stderr_write(sepSlim)
-        stderr_write(self.status)
-        stderr_write("Usable space change: {} -> {}\n".format(
+        stderr_wt(sepSlim)
+        stderr_wt(self.status)
+        stderr_wt("Usable space change: {} -> {}\n".format(
             humansize(usable_space), humansize(final_usable_space)))
 
     @staticmethod
@@ -860,27 +859,27 @@ def parse_args():
     """Parse command line arguments."""
     result = {"dryrun": False, "force": False}
     for arg in sys.argv[1:]:
-        if arg.startswith("-"):
-            if arg == "--":
-                break
-            for c in arg[1:]:
-                if c == "d":
-                    result["dryrun"] = True
-                elif c == "f":
-                    result["force"] = True
-                elif c == "h":
-                    stderr_write(
-                        f"usage: {__file__} [-h] [-d] [-f]\n\n"
-                        "The Ultimate qBittorrent Maintenance Tool\n"
-                        "Author: David Pi\n\n"
-                        "optional arguments:\n"
-                        "  -h    show this help message and exit\n"
-                        "  -d    perform a dry run with no changes made\n"
-                        "  -f    force start a maintenance task\n")
-                    sys.exit()
-                else:
-                    sys.exit(f"error: unrecognized argument -- '{c}'\n"
-                             f"try '{__file__} -h' for more information")
+        if not arg.startswith("-"):
+            continue
+        if arg == "--":
+            break
+        for c in arg[1:]:
+            if c == "d":
+                result["dryrun"] = True
+            elif c == "f":
+                result["force"] = True
+            elif c == "h":
+                stderr_wt(f"usage: {__file__} [-h] [-d] [-f]\n\n"
+                          "The Ultimate qBittorrent Maintenance Tool\n"
+                          "Author: David Pi\n\n"
+                          "optional arguments:\n"
+                          "  -h    show this help message and exit\n"
+                          "  -d    perform a dry run with no changes made\n"
+                          "  -f    force start a maintenance task\n")
+                sys.exit()
+            else:
+                sys.exit(f"error: unrecognized argument -- '{c}'\n"
+                         f"try '{__file__} -h' for more information")
     return result
 
 
