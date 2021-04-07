@@ -52,26 +52,28 @@ class Logger:
     """Record and write logs in reversed order."""
 
     __slots__ = "_log"
+    _fmt = "{:17.17}    {:8.8}    {:>11.11}    {}\n"
 
     def __init__(self) -> None:
         self._log = []
 
     def __str__(self) -> str:
-        return "{:17}    {:8}    {:>11}    {}\n{}\n{}".format(
-            "Date", "Action", "Size", "Name", "-" * 80,
-            "".join(reversed(self._log)))
+        return "".join((
+            self._fmt.format("Date", "Action", "Size", "Name"),
+            "-" * 80 + "\n",
+            *reversed(self._log),
+        ))
 
     def __bool__(self):
         return not not self._log
 
     def record(self, action: str, content: str, size: int = None):
         """Record one line of log."""
-        self._log.append("{:17}    {:8}    {:>11}    {}\n".format(
-            datetime.now().strftime("%D %T"),
-            action,
-            humansize(size),
-            content,
-        ))
+        if isinstance(content, str):
+            content = re.sub(r"[\x01-\x1f\x7f]", " ", content)
+        self._log.append(
+            self._fmt.format(datetime.now().strftime("%D %T"), action,
+                             humansize(size), content))
 
     def write(self, logfile: str, copy_to: str = None):
         """Insert logs at the beginning of a logfile.
