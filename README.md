@@ -1,3 +1,3 @@
 ## About
 
-This script automates torrent management on qBittorrent, using constraint programming (CP) to optimize the selection and removal of torrents from a private tracker (PT) site. It focuses on hosting the most in-demand torrents to maximize upload efficiency.
+This script automates torrent management on qBittorrent, using constraint programming (CP) to optimize the download and removal of torrents from a private tracker (PT) site. It aims to host the most in-demand torrents to maximize upload efficiency.
